@@ -1,0 +1,51 @@
+# revoice configuration
+# Copy to revoice.yaml (same dir) or ~/.config/revoice/config.yaml, or point
+# $REVOICE_CONFIG at it. No config found -> stub provider (offline smoke-test only).
+#
+# Three model roles, independently configured:
+#   classifier  used by `learn` to index the corpus — cheap + fast is fine
+#   rewriter    produces the revoiced text — this one must nail the voice
+#   critic      judges rewrites (voice? meaning?) — never writes output
+#
+# Fields per role:
+#   kind         stub | ollama | openai_compat | anthropic | openrouter
+#   model        model name for that backend
+#   base_url     ollama (default http://localhost:11434) / openai_compat endpoints
+#   api_key_env  env var holding the API key (anthropic/openrouter/remote endpoints)
+#   temperature  sampling temp (default 0.3)
+#   max_tokens   reply cap (default 4096)
+
+data_dir: data          # voice packs live here: data/<voice>/{training-data,params}
+
+# ---- fully local (Ollama on any OS; set base_url if it's on another machine) ----
+classifier:
+  kind: ollama
+  model: qwen3.5:9b     # small + quick: classification is easy work
+
+rewriter:
+  kind: ollama
+  model: qwen3.8:27b    # the voice model: biggest you can run comfortably
+
+critic:
+  kind: ollama
+  model: qwen3.8:27b    # reuse the rewriter, or point at a bigger judge
+
+# ---- alternatives (swap into any role) ----
+
+# Local OpenAI-compatible server (mlx_lm.server, LM Studio, llama.cpp, vLLM):
+# rewriter:
+#   kind: openai_compat
+#   base_url: http://localhost:8080/v1
+#   model: my-tuned-31b
+
+# Claude API:
+# critic:
+#   kind: anthropic
+#   model: claude-sonnet-5
+#   api_key_env: ANTHROPIC_API_KEY
+
+# OpenRouter (one key, any hosted model):
+# rewriter:
+#   kind: openrouter
+#   model: qwen/qwen3.5-122b-a10b
+#   api_key_env: OPENROUTER_API_KEY

@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>revoice</title>
+<script src="https://cdn.jsdelivr.net/gh/deftio/bitwrench/bitwrench.min.js"></script>
+<style>
+:root{--acc:#4a6fa5;--ok:#3d8b52;--warn:#c78d2c;--bad:#b8433c;--bg:#f7f7f5;--card:#fff;--ink:#22252a;--mut:#78808c;--line:#e4e4e0}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;background:var(--bg);color:var(--ink);line-height:1.5}
+header{background:var(--acc);color:#fff;padding:.7em 1.2em;display:flex;align-items:baseline;gap:1em;flex-wrap:wrap}
+header h1{margin:0;font-size:1.25em;font-weight:650;letter-spacing:.02em}
+header .sub{opacity:.75;font-size:.85em}
+main{max-width:1060px;margin:1.2em auto;padding:0 1em}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1em 1.2em;margin-bottom:1em}
+.row{display:flex;gap:.8em;flex-wrap:wrap;align-items:center}
+label{font-size:.85em;color:var(--mut)}
+select,input[type=text]{padding:.4em .6em;border:1px solid var(--line);border-radius:6px;font-size:.95em;background:#fff}
+textarea{width:100%;min-height:9em;padding:.7em;border:1px solid var(--line);border-radius:8px;font:inherit;font-size:.95em;resize:vertical}
+button{padding:.45em 1.1em;border:0;border-radius:7px;background:var(--acc);color:#fff;font-size:.95em;cursor:pointer}
+button:hover{filter:brightness(1.08)}
+button.ghost{background:transparent;color:var(--acc);border:1px solid var(--acc)}
+button.small{padding:.25em .7em;font-size:.82em}
+button.sel{outline:2px solid var(--ink)}
+input[type=range]{accent-color:var(--acc)}
+.badge{display:inline-block;padding:.1em .6em;border-radius:1em;font-size:.75em;color:#fff;vertical-align:middle}
+.b-rewritten{background:var(--acc)}.b-unchanged{background:var(--ok)}.b-failed{background:var(--warn)}.b-error{background:var(--bad)}.b-rejected{background:var(--bad)}
+.span-row{border-top:1px solid var(--line);padding:.8em 0}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:.9em}
+@media(max-width:700px){.cols{grid-template-columns:1fr}}
+.txt{font-size:.92em;white-space:pre-wrap;background:var(--bg);border-radius:6px;padding:.6em .7em;min-height:2.2em}
+.txt.orig{color:#555}
+.meta{font-size:.78em;color:var(--mut);margin:.3em 0}
+.hidden{display:none}
+.stat{font-size:.9em;margin:.15em 0}
+.bar{display:inline-block;height:10px;background:var(--acc);border-radius:3px;vertical-align:middle}
+#toast{position:fixed;bottom:1em;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:.5em 1.2em;border-radius:8px;opacity:0;transition:opacity .3s;font-size:.9em}
+.spin{display:inline-block;width:1em;height:1em;border:2px solid #fff5;border-top-color:#fff;border-radius:50%;animation:r 0.8s linear infinite;vertical-align:middle}
+@keyframes r{to{transform:rotate(360deg)}}
+footer{color:var(--mut);text-align:center;font-size:.8em;padding:1.5em}
+</style>
+</head>
+<body>
+<header>
+  <h1>revoice</h1>
+  <span class="sub">rewrite documents in your own voice · structure preserved</span>
+  <span style="flex:1"></span>
+  <span class="sub" id="health">…</span>
+</header>
+<main>
+  <div class="card">
+    <div class="row">
+      <label>voice <select id="voice"></select></label>
+      <label>register <select id="register"><option value="">auto</option></select></label>
+      <label>strength <input type="range" id="strength" min="0" max="1" step="0.05" value="0.7">
+        <span id="strengthv">0.7</span></label>
+      <label><input type="checkbox" id="critique"> critique</label>
+      <span style="flex:1"></span>
+      <input type="file" id="file" accept=".md,.txt,.markdown,.rst" class="hidden">
+      <button class="ghost" onclick="document.getElementById('file').click()">open file…</button>
+      <button id="go" onclick="run()">revoice</button>
+    </div>
+    <div style="margin-top:.7em">
+      <textarea id="input" placeholder="Paste or drop text here — brain dump, AI-assisted draft, whatever. It comes back in your voice."></textarea>
+    </div>
+  </div>
+
+  <div class="card hidden" id="statsCard">
+    <b>document stats</b> <span class="meta" id="verdict"></span>
+    <div id="stats"></div>
+  </div>
+
+  <div class="card hidden" id="diffCard">
+    <div class="row">
+      <b>review</b> <span class="meta" id="diffMeta"></span>
+      <span style="flex:1"></span>
+      <button class="small ghost" onclick="setAll('accept')">accept all</button>
+      <button class="small" onclick="saveReview()">save review</button>
+      <button class="small ghost" onclick="download()">download result</button>
+    </div>
+    <div id="spans"></div>
+  </div>
+</main>
+<div id="toast"></div>
+<footer>revoice · local-first · <a href="/docs">API docs</a></footer>
+
+<script>
+const $ = s => document.querySelector(s);
+let JOB = null, DIFF = null, DECISIONS = {};
+
+function toast(m){const t=$('#toast');t.textContent=m;t.style.opacity=1;setTimeout(()=>t.style.opacity=0,2500)}
+async function api(path, opts){const r=await fetch(path,opts);if(!r.ok)throw new Error((await r.text()).slice(0,200));return r.json()}
+
+async function init(){
+  try{
+    const h=await api('/v1/health');
+    $('#health').textContent=`v${h.version} · ${h.voices.length} voice${h.voices.length===1?'':'s'}`;
+    const vs=await api('/v1/voices');
+    $('#voice').innerHTML=vs.map(v=>`<option>${v.name}</option>`).join('')||'<option value="">(none — create one via CLI)</option>';
+    loadRegisters();
+  }catch(e){$('#health').textContent='server unreachable'}
+}
+async function loadRegisters(){
+  const v=$('#voice').value; if(!v)return;
+  try{const m=await api(`/v1/voices/${v}`);
+    $('#register').innerHTML='<option value="">auto</option>'+(m.registers||[]).map(r=>`<option>${r}</option>`).join('');
+  }catch(e){}
+}
+$('#voice').addEventListener('change',loadRegisters);
+$('#strength').addEventListener('input',e=>$('#strengthv').textContent=e.target.value);
+$('#file').addEventListener('change',e=>{
+  const f=e.target.files[0]; if(!f)return;
+  f.text().then(t=>{$('#input').value=t;toast(`loaded ${f.name}`)});
+});
+document.addEventListener('drop',e=>{e.preventDefault();const f=e.dataTransfer.files[0];
+  if(f)f.text().then(t=>{$('#input').value=t;toast(`loaded ${f.name}`)})});
+document.addEventListener('dragover',e=>e.preventDefault());
+
+async function run(){
+  const text=$('#input').value; if(!text.trim()){toast('nothing to revoice');return}
+  const go=$('#go'); go.innerHTML='<span class="spin"></span>'; go.disabled=true;
+  try{
+    showStats(text);
+    const fd=new FormData();
+    fd.append('file',new Blob([text],{type:'text/markdown'}),'input.md');
+    const v=$('#voice').value; if(v)fd.append('voice',v);
+    const r=$('#register').value; if(r)fd.append('register',r);
+    fd.append('strength',$('#strength').value);
+    fd.append('critique',$('#critique').checked);
+    const j=await api('/v1/revoice-file',{method:'POST',body:fd});
+    JOB=j.job;
+    let st;
+    do{ await new Promise(r=>setTimeout(r,800)); st=await api(`/v1/jobs/${JOB}`);}while(st.status==='running');
+    if(st.status==='error')throw new Error(st.error);
+    DIFF=await api(`/v1/jobs/${JOB}/diff`);
+    renderDiff(st);
+  }catch(e){toast('error: '+e.message)}
+  go.textContent='revoice'; go.disabled=false;
+}
+
+async function showStats(text){
+  try{
+    const v=$('#voice').value;
+    const s=await api('/v1/stats',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({text, voice:v||null})});
+    const c=s.content, fp=s.fingerprint;
+    $('#verdict').textContent=`${fp.words} words · heterogeneity ${c.style_heterogeneity} · ${c.verdict}`;
+    let html='';
+    for(const [t,frac] of Object.entries(c.blend))
+      html+=`<div class="stat">${t} <span class="bar" style="width:${Math.max(frac*180,3)}px"></span> ${(frac*100).toFixed(0)}%</div>`;
+    if(s.match){
+      const best=s.match.best_register, r=s.match.results[best];
+      const cal=r.calibration||{};
+      html+=`<div class="stat" style="margin-top:.4em">voice match (${best}): <b>${r.composite}</b>/100`+
+        (cal.self_mean?` <span class="meta">corpus self-score ${cal.self_mean}±${cal.self_std}</span>`:'')+`</div>`;
+    }
+    $('#stats').innerHTML=html; $('#statsCard').classList.remove('hidden');
+  }catch(e){}
+}
+
+function badge(status){
+  if(status==='rewritten')return'<span class="badge b-rewritten">rewritten</span>';
+  if(status==='unchanged')return'<span class="badge b-unchanged">on-target · untouched</span>';
+  if(status.startsWith('rubric-rejected'))return`<span class="badge b-rejected">${status}</span>`;
+  if(status.startsWith('validation-failed'))return'<span class="badge b-failed">validation failed · original kept</span>';
+  return`<span class="badge b-error">${status}</span>`;
+}
+
+function renderDiff(st){
+  DECISIONS={};
+  $('#diffMeta').textContent=`register ${DIFF.register} · strength ${DIFF.strength} · `+
+    Object.entries(DIFF.summary).map(([k,v])=>`${v} ${k}`).join(' · ');
+  const rows=DIFF.spans.map(s=>{
+    const changed=s.status==='rewritten';
+    const rub=s.rubric?`<div class="meta">rubric: `+Object.entries(s.rubric.dimensions)
+      .map(([d,r])=>`${d}=${r.choice}`).join(' · ')+`</div>`:'';
+    const controls=changed?`
+      <div class="row" style="margin-top:.3em">
+        <button class="small" id="acc-${s.id}" onclick="decide('${s.id}','accept')">accept</button>
+        <button class="small ghost" id="rej-${s.id}" onclick="decide('${s.id}','reject')">reject</button>
+        <button class="small ghost" id="edi-${s.id}" onclick="editSpan('${s.id}')">edit</button>
+      </div>
+      <textarea id="ed-${s.id}" class="hidden" style="margin-top:.4em">${s.new||''}</textarea>`:'';
+    return`<div class="span-row" id="row-${s.id}">
+      <div class="meta">${s.id} · ${s.kind} ${badge(s.status)}${s.attribution_score!==undefined?` · attribution ${s.attribution_score}`:''}</div>
+      <div class="cols">
+        <div class="txt orig">${esc(s.original)}</div>
+        <div class="txt">${esc(s.new??s.rejected??'(unchanged)')}</div>
+      </div>${rub}${controls}</div>`;
+  }).join('');
+  $('#spans').innerHTML=rows;
+  $('#diffCard').classList.remove('hidden');
+}
+function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
+function decide(id,d){DECISIONS[id]={id,decision:d};
+  for(const p of ['acc','rej','edi']){const b=$(`#${p}-${id}`);if(b)b.classList.remove('sel')}
+  const b=$(`#${d==='accept'?'acc':d==='reject'?'rej':'edi'}-${id}`);if(b)b.classList.add('sel');}
+function editSpan(id){const t=$(`#ed-${id}`);t.classList.remove('hidden');
+  DECISIONS[id]={id,decision:'edit'};decide(id,'edit');
+  t.addEventListener('input',()=>DECISIONS[id].edited_text=t.value);}
+function setAll(d){DIFF.spans.filter(s=>s.status==='rewritten').forEach(s=>decide(s.id,d))}
+async function saveReview(){
+  const ds=Object.values(DECISIONS).map(d=>d.decision==='edit'?{...d,edited_text:d.edited_text??$(`#ed-${d.id}`).value}:d);
+  if(!ds.length){toast('no decisions to save');return}
+  const r=await api(`/v1/jobs/${JOB}/review`,{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({voice:$('#voice').value||null,decisions:ds})});
+  toast(`${r.recorded} decisions → training pairs`);
+}
+async function download(){
+  const r=await fetch(`/v1/jobs/${JOB}/result`);const b=await r.blob();
+  const a=document.createElement('a');a.href=URL.createObjectURL(b);
+  a.download=(DIFF&&`revoiced.md`)||'revoiced.md';a.click();
+}
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>revoice — voice-match demo</title>
+<script src="https://cdn.jsdelivr.net/npm/bitwrench/dist/bitwrench.umd.min.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<script>
+bw.loadStyles({ primary: '#4a6fa5', secondary: '#3d8b52' });
+bw.injectCSS(bw.css({
+  '.vbar': { height: '12px', borderRadius: '4px', background: 'var(--bw-primary, #4a6fa5)', display: 'inline-block', verticalAlign: 'middle' }
+}));
+
+// ---- stylometry (JS port of revoice.core.stylometry — same math, demo subset) ----
+var FW = ("the of and a to in is that it for on with as at by this but not are from or an be have has had " +
+"was were will would could should so if then than which who what when where how all any both each " +
+"few more most other some such no nor only own same too very can just don now about into over after").split(" ");
+var BINS = [0,5,10,15,20,25,30,40,60,10000];
+
+function fingerprint(text){
+  var words = (text.toLowerCase().match(/[a-z']+/g)) || [];
+  var sents = text.split(/(?<=[.!?])\s+|\n{2,}/).filter(function(s){return s.trim();});
+  var n = Math.max(words.length,1), ns = Math.max(sents.length,1);
+  var counts = {}; words.forEach(function(w){ counts[w]=(counts[w]||0)+1; });
+  var fw = {}; FW.forEach(function(w){ fw[w]=(counts[w]||0)/n; });
+  var lens = sents.map(function(s){ return ((s.match(/[a-z']+/gi))||[]).length; });
+  var hist = BINS.slice(0,-1).map(function(){return 0;});
+  lens.forEach(function(L){ for(var i=0;i<BINS.length-1;i++) if(L>=BINS[i]&&L<BINS[i+1]){hist[i]++;break;} });
+  var th = Math.max(lens.length,1); hist = hist.map(function(c){return c/th;});
+  var punct = {}; ",;:—–()!?\"'".split("").forEach(function(p){
+    punct[p] = (text.split(p).length-1)/ns; });
+  var s = text.toLowerCase().replace(/\s+/g,' ');
+  var grams = {}; for(var i=0;i<s.length-2;i++){ var g=s.substr(i,3); grams[g]=(grams[g]||0)+1; }
+  var tot = Math.max(s.length-2,1); var ng={};
+  Object.keys(grams).sort(function(a,b){return grams[b]-grams[a];}).slice(0,300)
+    .forEach(function(g){ ng[g]=grams[g]/tot; });
+  return { words:n, fw:fw, hist:hist, punct:punct, ngrams:ng };
+}
+function cosine(a,b){ var d=0,na=0,nb=0,k;
+  for(k in a){ na+=a[k]*a[k]; if(b[k])d+=a[k]*b[k]; } for(k in b){ nb+=b[k]*b[k]; }
+  return (na&&nb)? d/Math.sqrt(na*nb) : 0; }
+
+function score(fp, base){
+  var zs=[], w, m, sd;
+  for(w in base.function_words){ m=base.function_words[w][0]; sd=base.function_words[w][1];
+    zs.push(Math.abs((fp.fw[w]||0)-m)/Math.max(sd, 0.15*m+5e-4)); }
+  var delta = zs.reduce(function(a,b){return a+b;},0)/zs.length;
+  var deltaSim = Math.exp(-delta/1.5);
+  var l1=0; base.sent_len_hist.forEach(function(v,i){ l1+=Math.abs((fp.hist[i]||0)-v); });
+  var rhythm = 1-l1/2;
+  var ngram = cosine(fp.ngrams, base.char_ngrams);
+  var ps=[], p; for(p in base.punct){ m=base.punct[p][0]; sd=base.punct[p][1];
+    ps.push(Math.exp(-Math.abs((fp.punct[p]||0)-m)/Math.max(sd,0.05))); }
+  var punct = ps.reduce(function(a,b){return a+b;},0)/ps.length;
+  var composite = 100*(0.3*deltaSim + 0.3*ngram + 0.2*rhythm + 0.2*punct);
+  // normalize by the register corpus's own self-score (baseline-size bias correction)
+  var rel = base.self ? Math.min(100*composite/base.self[0], 115) : composite;
+  return { composite: composite, rel: rel, delta: delta,
+           parts:{delta:deltaSim, ngram:ngram, rhythm:rhythm, punct:punct} };
+}
+
+// ---- page ----
+var SAMPLES = {
+  'Twain-ish': "When I was well grown, at last, I was sold and taken away, and I never saw her again. She was broken-hearted, and so was I, and we cried; but she comforted me as well as she could, and said we were sent into this world for a wise and good purpose, and must do our duties without repining, take our life as we might find it, live it for the best good of others, and never mind about the results; they were not our affair. She said men who did like this would have a noble and beautiful reward by and by in another world, and although we animals would not go there, to do well and right without reward would give to our brief lives a worthiness and dignity which in itself would be a reward. One may see by this that she had a wise and thoughtful head, for all there was so much lightness and vanity in it.",
+  'Darwin-ish': "When on board H.M.S. Beagle, I was much struck with certain facts in the distribution of the inhabitants of South America, and in the geological relations of the present to the past inhabitants of that continent. These facts seemed to me to throw some light on the origin of species — that mystery of mysteries, as it has been called by one of our greatest philosophers. On my return home, it occurred to me that something might perhaps be made out on this question by patiently accumulating and reflecting on all sorts of facts which could possibly have any bearing on it. After five years' work I allowed myself to speculate on the subject, and drew up some short notes; these I enlarged in the year following into a sketch of the conclusions which then seemed to me probable: from that period to the present day I have steadily pursued the same object.",
+  'AI-flavored': "In today's fast-paced world, it's important to note that effective writing serves as a testament to clear thinking. Moreover, leveraging robust and scalable communication strategies ensures seamless alignment across stakeholders and unlocks the full potential of any organization. It's worth noting that comprehensive approaches to documentation play a crucial role in navigating the complexities of the modern workplace. Furthermore, by diving deep into best practices, teams can elevate their deliverables and streamline their workflows. Ultimately, this isn't just about writing — it's about empowering seamless collaboration across the ever-evolving landscape of knowledge work. In conclusion, robust communication remains a game-changer for organizations seeking to deliver value at scale."
+};
+
+var VOICES = null;
+
+function render(){
+  var results = { t:'div', a:{id:'results'} };
+  var page = { t:'div', a:{class:'bw_container', style:bw.s({maxWidth:'880px'})}, c:[
+    { t:'header', a:{style:bw.s({padding:'1.6em 0 0.4em 0'})}, c:[
+      { t:'h1', a:{style:bw.s({marginBottom:'0.1em'})}, c:'voice-match demo' },
+      { t:'p', c:['Paste text and score it against the example voices (Mark Twain, Charles Darwin) with revoice’s stylometrics — Burrows’ Delta, character n-grams, sentence rhythm, punctuation habits. Runs entirely in your browser. ',
+        { t:'a', a:{href:'index.html'}, c:'← back' }] }
+    ]},
+    { t:'div', a:{class:'bw_card'}, c:[
+      { t:'p', c: Object.keys(SAMPLES).map(function(name){
+          return { t:'button', a:{class:'bw_btn', style:bw.s({marginRight:'0.5em'}),
+            onclick:function(){ bw.el('#txt').value = SAMPLES[name]; analyze(); } }, c:'sample: '+name };
+        }) },
+      { t:'textarea', a:{id:'txt', rows:'7', style:bw.s({width:'100%', font:'inherit', padding:'0.6em'}),
+        placeholder:'Paste at least a paragraph — 150+ words gives stable scores…'} },
+      { t:'p', c:{ t:'button', a:{class:'bw_btn bw_primary', onclick:analyze}, c:'score it' } }
+    ]},
+    results,
+    { t:'footer', a:{style:bw.s({padding:'2em 0', opacity:'0.7', fontSize:'0.9em'})},
+      c:'Scores are relative: compare candidates against each other and against each voice’s own corpus. Short texts are noisy — revoice proper reports calibration bands. BSD-2-Clause © deftio' }
+  ]};
+  bw.mount('#app', page);
+}
+
+function bar(v){ return { t:'span', c:[
+  { t:'span', a:{class:'vbar', style:bw.s({width: Math.max(v*2.2,2)+'px'})} },
+  { t:'span', a:{style:bw.s({marginLeft:'0.5em', fontSize:'0.9em'})}, c:' '+v.toFixed(1) } ]}; }
+
+function analyze(){
+  var text = bw.el('#txt').value || '';
+  if(text.trim().length < 40){ bw.el('#results', {t:'p', c:'(need a bit more text)'}); return; }
+  if(!VOICES){ bw.el('#results', {t:'p', c:'loading baselines…'}); return; }
+  var fp = fingerprint(text);
+  var rows = [];
+  Object.keys(VOICES).forEach(function(v){
+    Object.keys(VOICES[v]).forEach(function(reg){
+      var r = score(fp, VOICES[v][reg]);
+      rows.push({ label: v+' · '+reg, r: r });
+    });
+  });
+  rows.sort(function(a,b){ return b.r.rel - a.r.rel; });
+  var best = rows[0];
+  var table = { t:'div', a:{class:'bw_card'}, c:[
+    { t:'h3', c:['likely match: ',
+      best.r.rel >= 75
+        ? { t:'span', a:{class:'bw_badge bw_success'}, c: best.label }
+        : { t:'span', a:{class:'bw_badge bw_warning'}, c:'none — below every voice’s corpus self-band' },
+      ' ', { t:'span', a:{style:bw.s({opacity:'0.7', fontSize:'0.85em'})}, c:'('+fp.words+' words'+(fp.words<150?' — short, noisy':'')+')' }] },
+    { t:'table', a:{class:'bw_table', style:bw.s({width:'100%'})}, c:[
+      { t:'thead', c:{ t:'tr', c:['voice · register','match (vs corpus self-score)','delta (raw)','ngram','rhythm','punct'].map(function(h){return {t:'th', c:h};}) } },
+      { t:'tbody', c: rows.map(function(row){
+          var p = row.r.parts;
+          return { t:'tr', c:[
+            { t:'td', c: row.label },
+            { t:'td', c: bar(row.r.rel) },
+            { t:'td', c: p.delta.toFixed(2)+' ('+row.r.delta.toFixed(2)+')' },
+            { t:'td', c: p.ngram.toFixed(2) },
+            { t:'td', c: p.rhythm.toFixed(2) },
+            { t:'td', c: p.punct.toFixed(2) } ]};
+        }) }
+    ]}
+  ]};
+  bw.el('#results', table);
+}
+
+render();
+fetch('demo/voices.json').then(function(r){ return r.json(); })
+  .then(function(v){ VOICES = v; })
+  .catch(function(){ bw.el('#results', {t:'p', c:'could not load demo/voices.json — serve this page over http'}); });
+</script>
+</body>
+</html>

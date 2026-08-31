@@ -1,0 +1,19 @@
+name: ci
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      # setup-uv publishes immutable tags only (no moving @vN) as of v8
+      - uses: astral-sh/setup-uv@v10.0.1
+      - name: privacy gate — no user data, env files, or secrets in git
+        run: python3 scripts/check_no_user_data.py
+      - run: uv sync --all-extras
+      - run: uv pip install pytest pytest-cov ruff
+      - name: lint — zero warnings
+        run: uv run ruff check revoice/ tests/ scripts/
+      - run: uv run pytest tests/ -q --cov=revoice --cov-report=term-missing --cov-fail-under=100

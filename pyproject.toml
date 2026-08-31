@@ -1,0 +1,60 @@
+[project]
+name = "revoice"
+version = "0.1.0"
+description = "Rewrite documents in your own voice. Register transfer within one author, structure preserved."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "BSD-2-Clause" }
+authors = [{ name = "manu", email = "manu@deftio.com" }]
+dependencies = [
+    "typer>=0.12",
+    "pydantic>=2.7",
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+    "fastapi>=0.111",
+    "uvicorn>=0.30",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+docx = ["python-docx>=1.1"]
+pptx = ["python-pptx>=0.6.23"]
+pdf = ["pypdfium2>=4.30"]
+all = ["python-docx>=1.1", "python-pptx>=0.6.23", "pypdfium2>=4.30"]
+
+[project.scripts]
+revoice = "revoice.cli:app"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["revoice*"]
+
+[tool.setuptools.package-data]
+revoice = ["static/*.html", "rubric/README.md", "rubric/examples/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["B008"]  # typer.Option in defaults is the typer idiom
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]
+
+[tool.coverage.run]
+source = ["revoice"]
+
+[tool.coverage.report]
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+]

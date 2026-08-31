@@ -1,0 +1,18 @@
+# Single-text mode: judge a commit message on its own (original: none).
+dimensions:
+  informativeness:
+    description: Could a reviewer understand what changed and why from the message alone?
+    weight: 0.6
+    choices:
+      clear: "states what changed and why; a reviewer needs nothing else"
+      what_only: "says what changed but not why"
+      vague: "generic ('fix stuff', 'updates'); reviewer must read the diff"
+    scores: {clear: 1.0, what_only: 0.5, vague: 0.0}
+  scope_honesty:
+    description: Does the message's claimed scope match a single coherent change?
+    weight: 0.4
+    choices:
+      focused: "one coherent change, described as such"
+      bundled: "multiple unrelated changes admitted or implied"
+      hidden: "message implies less than the change plainly includes"
+    scores: {focused: 1.0, bundled: 0.4, hidden: 0.0}

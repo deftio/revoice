@@ -1,0 +1,29 @@
+# Judge a summary (candidate) against its source document (original).
+dimensions:
+  coverage:
+    description: Does the summary capture the source's essential points?
+    weight: 0.4
+    choices:
+      complete: "every essential point present; nothing a reader would miss"
+      adequate: "main points present; minor points dropped"
+      gappy: "at least one essential point missing"
+      misleading: "omissions change what a reader would conclude"
+    scores: {complete: 1.0, adequate: 0.7, gappy: 0.25, misleading: 0.0}
+    reject_below: 0.1
+  faithfulness:
+    description: Are all claims in the summary supported by the source?
+    weight: 0.4
+    choices:
+      faithful: "every claim traceable to the source"
+      shaded: "no new claims, but emphasis shifted meaningfully"
+      unsupported: "contains a claim the source does not make"
+    scores: {faithful: 1.0, shaded: 0.5, unsupported: 0.0}
+    reject_below: 0.3
+  concision:
+    description: Is the summary appropriately brief for its coverage?
+    weight: 0.2
+    choices:
+      tight: "no wasted words"
+      acceptable: "some redundancy, still clearly a summary"
+      rambling: "restates, hedges, or scaffolds; barely shorter than reading the source"
+    scores: {tight: 1.0, acceptable: 0.6, rambling: 0.1}

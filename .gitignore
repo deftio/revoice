@@ -1,0 +1,14 @@
+__pycache__/
+*.egg-info/
+.venv/
+build/
+dist/
+# voice packs are personal data — never commit
+data/
+revoice.yaml
+# env / credential files — never commit
+.env
+.env.*
+*.pem
+*.key
+credentials*
