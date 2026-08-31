@@ -111,3 +111,12 @@ def test_gate_secret_patterns_in_content(tmp_path, monkeypatch):
     binary.write_bytes(b"\x00\x01\x02sk-ant-" + b"y" * 40)
     bad = secret_violations(["config.py", "readme.md", "test_fake.py", "img.dat", "missing.txt"])
     assert len(bad) == 1 and "anthropic" in bad[0][1] and bad[0][0].startswith("config.py:")
+
+
+def test_learn_heals_missing_pack_gitignore(tmp_path):
+    p = _mk_pack(tmp_path, "cpd")
+    (p.root / ".gitignore").unlink()
+    (p.training_dir / "a.md").write_text("Some words for the corpus to index and profile properly here.")
+    r = runner.invoke(app, ["learn", "cpd", "--quiet", "-c", str(_cfg(tmp_path))])
+    assert r.exit_code == 0
+    assert (p.root / ".gitignore").is_file()

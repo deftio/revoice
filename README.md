@@ -169,10 +169,15 @@ tests/                 pytest suite (stub provider — runs offline)
 
 ## Status & roadmap
 
-Working: learn / plan / run / stats / judge / serve, style.yaml, rubric critique,
-review flywheel. Next: pass-1/2 integration (rolling context, cohesion edit),
-pair mining + de-voicing bootstrap (Phase 4), MLX LoRA fine-tuning + GGUF export
-(Phase 5), docx/pptx round-trip (Phase 6). Details: [docs/architecture.md](docs/architecture.md).
+Working today — the full three-pass pipeline: `plan` (deterministic pass-0 eval) →
+`run` (attribution, context-carrying rewrite, validation, lint, style.yaml, rubric
+critique, optional `--cohesion` seam pass) → reviewable diff with before/after
+heterogeneity. Plus `learn`, `stats` (4 output formats), `judge`, `serve --gui`
+(full CLI↔API parity + review flywheel), `doctor` (incl. privacy checks), 100%
+test coverage, zero-warning lint, and a CI gate against committed user data or
+secrets. Next: pair mining + de-voicing bootstrap (Phase 4), MLX LoRA fine-tuning
++ GGUF archival export (Phase 5), docx/pptx round-trip (Phase 6).
+Details: [docs/architecture.md](docs/architecture.md).
 
 ## License
 

@@ -1,7 +1,7 @@
 # Revoice — Architecture
 
 
-> Working design document. "Manufy" was the working name during early design; the tool is **revoice**.
+> Design document. "Manufy" was the working name during early design; the tool is **revoice**.
 *Working doc. Status: draft, in discussion.*
 
 Pronounced **ma-NOO-fai**. (Spelling open: manufy / manufai / manoofai.)

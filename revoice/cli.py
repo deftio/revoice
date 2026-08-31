@@ -190,6 +190,11 @@ def learn(
     if write_rubrics(pack.params_dir):
         typer.echo(f"      created {pack.params_dir / 'rubrics.yaml'} (judging dimensions incl. integrity)")
 
+    gi = pack.root / ".gitignore"  # heal packs made by cp -r (only `voices add` drops one)
+    if not gi.exists():
+        gi.write_text("# voice pack: personal writing data — never commit\n*\n")
+        typer.echo(f"      created {gi} (voice packs are personal data)")
+
     typer.echo("[3/3] building stylometric baselines (voice-match metrics)")
     from revoice.core.metrics import build_baselines, load_calibration
 

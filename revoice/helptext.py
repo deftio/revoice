@@ -176,18 +176,31 @@ uploads anything.
     "pipeline": (
         "What happens to a document during `run`",
         """
-[bold]THE PIPELINE[/bold]
+[bold]THE PIPELINE — three passes[/bold]
 
-  parse            file → structural tree (md AST, docx runs, pptx frames)
-  span extract     leaf text only, [{id, text}] — the LLM NEVER sees structure
-  cleanup          objective fixes: typos, doubled words, punctuation (any strength)
-  attribution      each span scored against the target register (see: registers)
-  rewrite          off-target spans rewritten by the rewriter + exemplars
-  critique         critic checks: sounds like you? meaning intact?
-  validate         deterministic: numbers/entities preserved, length bounds, IDs
-  AI-tell lint     scans OUTPUT for LLM tics; violators re-rewritten
-  reassemble       spans back into the original structure
-  emit             output file (same format) + span-level diff
+Pass 0 (deterministic; also standalone as `revoice plan`):
+  whole-document eval: doc kind, content blend, math/dialogue/citation densities,
+  chunking seams, per-segment treatment + cautions. Zero LLM.
+
+Pass 1 (generation):
+  parse            file → structural tree; span extract — the LLM NEVER sees structure
+  attribution      each span scored against the target register (see: registers);
+                   on-target spans pass through byte-identical
+  rewrite          off-target spans rewritten with profile + exemplars + style.yaml,
+                   per-span cautions (math/URLs/citations/quotes preserved), and
+                   rolling read-only context from the previous span
+  validate         deterministic: numbers/entities preserved, length bounds
+  AI-tell lint     scans OUTPUT for LLM tics; violators re-rewritten once
+  hard swaps       style.yaml `swaps` applied deterministically
+  critique         optional --critique: anchored-rubric judging (voice_fidelity,
+                   integrity, verbosity, ai_register); failing spans keep the original
+
+Pass 2 (optional --cohesion):
+  seam edit        rewritten spans re-checked against their preceding passage for
+                   broken references/transitions; edits land as span diffs
+
+emit: output file (same format) + span-level diff + heterogeneity before/after
+(a properly revoiced document leaves MORE uniform than it arrived).
 
 --strength 0.0 → cleanup/proofread only.  1.0 → full rewrite.  Default 0.7.
 Failures worth knowing: revoice treats "rewrote text that was already right"
