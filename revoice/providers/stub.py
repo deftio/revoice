@@ -41,6 +41,10 @@ class StubProvider(Provider):
 
             m = re.search(r"^- ([a-z_]+):", system, re.MULTILINE)
             return m.group(1) if m else "unknown"
+        if "DEVOICE_PASSAGE" in system:
+            # deterministic mock de-voicing: flatten the voice a little
+            out = user.replace(";", ".").replace("--", ",").replace("—", ",")
+            return "In plain terms: " + out
         if "COHESION_EDIT" in system:
             return user  # stub: span always reads fine in context
         if "REWRITE_SPAN" in system:

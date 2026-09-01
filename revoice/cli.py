@@ -265,6 +265,58 @@ def judge(
             typer.secho(f"REJECTED by: {', '.join(result['rejected_by'])}", fg="red")
 
 
+train_app = typer.Typer(no_args_is_help=True,
+                        help="Fine-tuning: build the training set and per-backend tooling (Phase 5).")
+app.add_typer(train_app, name="train")
+
+
+@train_app.command("prep")
+def train_prep(
+    name: str = typer.Argument(..., help="Voice to build a training set for."),
+    base_model: str = typer.Option("mlx-community/gemma-3-27b-it-4bit", "--base-model",
+                                   help="Base model the generated scripts will fine-tune."),
+    bootstrap: int = typer.Option(200, "--bootstrap",
+                                  help="Max de-voicing bootstrap pairs to generate "
+                                       "(0 = flywheel pairs only, no LLM needed)."),
+    valid_frac: float = typer.Option(0.1, "--valid-frac", help="Fraction of examples held out for validation."),
+    seed: int = typer.Option(17, "--seed", help="Shuffle seed (reproducible splits)."),
+    verbose: bool = typer.Option(True, "--verbose/--quiet"),
+    config: Path = _cfg_opt,
+):
+    """Build params/train/: train.jsonl + valid.jsonl (chat format), plus ready-to-run
+    fine-tuning tooling — run_mlx.sh (Apple Silicon, mlx_lm.lora), train_unsloth.py
+    (CUDA), and a README covering GGUF archival export and pre-adoption evaluation.
+
+    Data sources: reviewed pairs from the GUI flywheel (accept/edit decisions), and a
+    de-voicing bootstrap — the classifier model rewrites polished corpus passages into
+    generic prose, yielding (generic → authentic) pairs, the exact mapping the tuned
+    model must learn.
+
+    Examples:
+      [green]revoice train prep manu[/green]
+      [green]revoice train prep manu --bootstrap 0[/green]      flywheel pairs only, offline
+      [green]revoice train prep manu --base-model mlx-community/Qwen3.5-9B-4bit[/green]
+    """
+    pack, cfg = _pack(name, config)
+    from revoice.core.train import build_dataset, write_tooling
+
+    provider = make_provider(cfg.classifier) if bootstrap > 0 else None
+
+    def progress(item, msg):
+        if verbose:
+            typer.echo(f"  {item}: {msg}")
+
+    typer.echo(f"[1/2] building dataset (bootstrap up to {bootstrap} pairs"
+               + (f" via {cfg.classifier.kind})" if provider else ", flywheel only)"))
+    stats = build_dataset(pack, provider, bootstrap, valid_frac, seed, progress)
+    typer.echo(f"      {stats['train']} train / {stats['valid']} valid "
+               f"({stats['flywheel']} flywheel, {stats['bootstrap']} bootstrap)")
+    typer.echo("[2/2] writing backend tooling")
+    for f in write_tooling(pack, base_model):
+        typer.echo(f"      {pack.params_dir / 'train' / f}")
+    typer.secho(f"next: see {pack.params_dir / 'train' / 'README.md'}", fg="green")
+
+
 @app.command()
 def doctor(config: Path = _cfg_opt):
     """Diagnose the setup: config, providers (one raw round-trip each), and privacy —

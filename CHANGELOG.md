@@ -32,6 +32,13 @@ Initial public release.
   flywheel)
 - `doctor`: config + provider round-trip diagnostics, plus privacy checks
   (pack .gitignore present, pack invisible to any surrounding git repo)
+- `train prep`: fine-tuning dataset builder — reviewed flywheel pairs
+  (accept/edit) + de-voicing bootstrap ((generic → authentic) pairs from
+  polished corpus windows) → deduped chat-format train/valid JSONL, plus
+  generated per-backend tooling: `run_mlx.sh` (Apple Silicon, mlx_lm.lora),
+  `train_unsloth.py` (CUDA), and a README covering serving the adapter
+  (mlx_lm.server → openai_compat provider), GGUF archival export, and
+  pre-adoption evaluation via `stats`/`judge`
 
 ### Providers
 - ollama, anthropic, openrouter, openai_compat (llama.cpp / LM Studio / mlx_lm /

@@ -131,6 +131,7 @@ spells out exactly what goes where).
 | `revoice run <file>` | revoice a document (`--strength`, `--register`, `--critique`, `--raw`, `--json`) |
 | `revoice stats <file>` | fingerprint + content blend + voice match (`--format text\|json\|md\|html`) |
 | `revoice judge a b` | rubric-judge a rewrite against its original |
+| `revoice train prep <voice>` | build the fine-tuning dataset (flywheel + de-voicing bootstrap) + ready-to-run unsloth/MLX scripts |
 | `revoice serve --gui` | API server + single-file review GUI |
 | `revoice doctor` | config + provider diagnostics with raw model replies |
 | `revoice help <topic>` | man-page-style docs: workflow, registers, config, providers, voicepacks, pipeline, privacy |
@@ -175,8 +176,11 @@ critique, optional `--cohesion` seam pass) → reviewable diff with before/after
 heterogeneity. Plus `learn`, `stats` (4 output formats), `judge`, `serve --gui`
 (full CLI↔API parity + review flywheel), `doctor` (incl. privacy checks), 100%
 test coverage, zero-warning lint, and a CI gate against committed user data or
-secrets. Next: pair mining + de-voicing bootstrap (Phase 4), MLX LoRA fine-tuning
-+ GGUF archival export (Phase 5), docx/pptx round-trip (Phase 6).
+secrets. Fine-tuning on-ramp: `train prep` builds the dataset (flywheel pairs +
+de-voicing bootstrap) and emits ready-to-run unsloth (CUDA) and mlx_lm (Apple
+Silicon) tooling with GGUF archival export steps. Next: corpus draft→polished
+pair mining (Phase 4), first LoRA runs + eval (Phase 5), docx/pptx round-trip
+(Phase 6).
 Details: [docs/architecture.md](docs/architecture.md).
 
 ## License
