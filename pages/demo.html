@@ -4,14 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>revoice — voice-match demo</title>
+<meta name="description" content="Paste any text and score it against example voices (Mark Twain, Charles Darwin) with revoice's stylometrics — entirely in your browser, nothing uploaded.">
 <script src="https://cdn.jsdelivr.net/npm/bitwrench/dist/bitwrench.umd.min.js"></script>
+<script src="site.js"></script>
 </head>
 <body>
 <div id="app"></div>
 <script>
-bw.loadStyles({ primary: '#4a6fa5', secondary: '#3d8b52' });
+bw.loadStyles(THEME);
 bw.injectCSS(bw.css({
-  '.vbar': { height: '12px', borderRadius: '4px', background: 'var(--bw-primary, #4a6fa5)', display: 'inline-block', verticalAlign: 'middle' }
+  '.vbar': { height: '12px', borderRadius: '4px', background: '#4a6fa5',
+             display: 'inline-block', verticalAlign: 'middle' }
 }));
 
 // ---- stylometry (JS port of revoice.core.stylometry — same math, demo subset) ----
@@ -56,7 +59,6 @@ function score(fp, base){
     ps.push(Math.exp(-Math.abs((fp.punct[p]||0)-m)/Math.max(sd,0.05))); }
   var punct = ps.reduce(function(a,b){return a+b;},0)/ps.length;
   var composite = 100*(0.3*deltaSim + 0.3*ngram + 0.2*rhythm + 0.2*punct);
-  // normalize by the register corpus's own self-score (baseline-size bias correction)
   var rel = base.self ? Math.min(100*composite/base.self[0], 115) : composite;
   return { composite: composite, rel: rel, delta: delta,
            parts:{delta:deltaSim, ngram:ngram, rhythm:rhythm, punct:punct} };
@@ -71,30 +73,6 @@ var SAMPLES = {
 
 var VOICES = null;
 
-function render(){
-  var results = { t:'div', a:{id:'results'} };
-  var page = { t:'div', a:{class:'bw_container', style:bw.s({maxWidth:'880px'})}, c:[
-    { t:'header', a:{style:bw.s({padding:'1.6em 0 0.4em 0'})}, c:[
-      { t:'h1', a:{style:bw.s({marginBottom:'0.1em'})}, c:'voice-match demo' },
-      { t:'p', c:['Paste text and score it against the example voices (Mark Twain, Charles Darwin) with revoice’s stylometrics — Burrows’ Delta, character n-grams, sentence rhythm, punctuation habits. Runs entirely in your browser. ',
-        { t:'a', a:{href:'index.html'}, c:'← back' }] }
-    ]},
-    { t:'div', a:{class:'bw_card'}, c:[
-      { t:'p', c: Object.keys(SAMPLES).map(function(name){
-          return { t:'button', a:{class:'bw_btn', style:bw.s({marginRight:'0.5em'}),
-            onclick:function(){ bw.el('#txt').value = SAMPLES[name]; analyze(); } }, c:'sample: '+name };
-        }) },
-      { t:'textarea', a:{id:'txt', rows:'7', style:bw.s({width:'100%', font:'inherit', padding:'0.6em'}),
-        placeholder:'Paste at least a paragraph — 150+ words gives stable scores…'} },
-      { t:'p', c:{ t:'button', a:{class:'bw_btn bw_primary', onclick:analyze}, c:'score it' } }
-    ]},
-    results,
-    { t:'footer', a:{style:bw.s({padding:'2em 0', opacity:'0.7', fontSize:'0.9em'})},
-      c:'Scores are relative: compare candidates against each other and against each voice’s own corpus. Short texts are noisy — revoice proper reports calibration bands. BSD-2-Clause © deftio' }
-  ]};
-  bw.mount('#app', page);
-}
-
 function bar(v){ return { t:'span', c:[
   { t:'span', a:{class:'vbar', style:bw.s({width: Math.max(v*2.2,2)+'px'})} },
   { t:'span', a:{style:bw.s({marginLeft:'0.5em', fontSize:'0.9em'})}, c:' '+v.toFixed(1) } ]}; }
@@ -107,20 +85,21 @@ function analyze(){
   var rows = [];
   Object.keys(VOICES).forEach(function(v){
     Object.keys(VOICES[v]).forEach(function(reg){
-      var r = score(fp, VOICES[v][reg]);
-      rows.push({ label: v+' · '+reg, r: r });
+      rows.push({ label: v+' · '+reg, r: score(fp, VOICES[v][reg]) });
     });
   });
   rows.sort(function(a,b){ return b.r.rel - a.r.rel; });
   var best = rows[0];
-  var table = { t:'div', a:{class:'bw_card'}, c:[
+  bw.el('#results', { t:'div', a:{class:'bw_card'}, c:[
     { t:'h3', c:['likely match: ',
       best.r.rel >= 75
         ? { t:'span', a:{class:'bw_badge bw_success'}, c: best.label }
         : { t:'span', a:{class:'bw_badge bw_warning'}, c:'none — below every voice’s corpus self-band' },
-      ' ', { t:'span', a:{style:bw.s({opacity:'0.7', fontSize:'0.85em'})}, c:'('+fp.words+' words'+(fp.words<150?' — short, noisy':'')+')' }] },
-    { t:'table', a:{class:'bw_table', style:bw.s({width:'100%'})}, c:[
-      { t:'thead', c:{ t:'tr', c:['voice · register','match (vs corpus self-score)','delta (raw)','ngram','rhythm','punct'].map(function(h){return {t:'th', c:h};}) } },
+      ' ', { t:'span', a:{style:bw.s({opacity:'0.7', fontSize:'0.85em'})},
+            c:'('+fp.words+' words'+(fp.words<150?' — short, noisy':'')+')' }] },
+    { t:'div', a:{style:bw.s({overflowX:'auto'})}, c:{ t:'table', a:{class:'bw_table', style:bw.s({width:'100%'})}, c:[
+      { t:'thead', c:{ t:'tr', c:['voice · register','match (vs corpus self-score)','delta (raw)','ngram','rhythm','punct']
+          .map(function(h){return {t:'th', c:h};}) } },
       { t:'tbody', c: rows.map(function(row){
           var p = row.r.parts;
           return { t:'tr', c:[
@@ -131,12 +110,27 @@ function analyze(){
             { t:'td', c: p.rhythm.toFixed(2) },
             { t:'td', c: p.punct.toFixed(2) } ]};
         }) }
-    ]}
-  ]};
-  bw.el('#results', table);
+    ]}}
+  ]});
 }
 
-render();
+bw.mount('#app', sitePage('demo.html', [
+  { t:'h1', c:'Voice-match demo' },
+  { t:'p', c:'Paste text and score it against the example voices — Mark Twain (fiction, essay) and Charles Darwin (memoir, science), built from public-domain corpora — using the same stylometrics revoice runs locally: Burrows’ Delta on function words, character n-grams, sentence rhythm, punctuation habits. Everything runs in your browser; nothing is uploaded anywhere.' },
+  { t:'div', a:{class:'bw_card'}, c:[
+    { t:'p', c: Object.keys(SAMPLES).map(function(name){
+        return { t:'button', a:{class:'bw_btn', style:bw.s({marginRight:'0.5em', marginBottom:'0.3em'}),
+          onclick:function(){ bw.el('#txt').value = SAMPLES[name]; analyze(); } }, c:'sample: '+name };
+      }) },
+    { t:'textarea', a:{id:'txt', rows:'8', style:bw.s({width:'100%', font:'inherit', padding:'0.6em'}),
+      placeholder:'Paste at least a paragraph — 150+ words gives stable scores…'} },
+    { t:'p', c:{ t:'button', a:{class:'bw_btn bw_primary', onclick:analyze}, c:'score it' } }
+  ]},
+  { t:'div', a:{id:'results'} },
+  { t:'p', a:{style:bw.s({opacity:'0.75', fontSize:'0.9em'})},
+    c:'Scores are relative: compare candidates against each other and against each voice’s own corpus self-band (100 ≈ indistinguishable from the corpus). Short texts are noisy — revoice proper reports full calibration bands, and this demo is a subset of its metrics.' }
+]));
+
 fetch('demo/voices.json').then(function(r){ return r.json(); })
   .then(function(v){ VOICES = v; })
   .catch(function(){ bw.el('#results', {t:'p', c:'could not load demo/voices.json — serve this page over http'}); });

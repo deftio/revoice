@@ -23,7 +23,7 @@ from revoice.core.stylometry import (  # noqa: E402
 )
 
 ROOT = Path(__file__).parent.parent
-OUT = ROOT / "docs" / "demo" / "voices.json"
+OUT = ROOT / "pages" / "demo" / "voices.json"
 
 PREFIX_REGISTER = {"essay": "essay", "fiction": "fiction",
                    "memoir": "memoir", "science": "science"}

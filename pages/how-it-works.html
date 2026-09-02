@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>revoice — how it works</title>
+<meta name="description" content="How revoice learns a writing voice and applies it: voice packs, three-pass rewriting, minimal-touch attribution, verification layers, and the fine-tuning flywheel.">
+<script src="https://cdn.jsdelivr.net/npm/bitwrench/dist/bitwrench.umd.min.js"></script>
+<script src="site.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<script>
+bw.loadStyles(THEME);
+
+bw.mount('#app', sitePage('how-it-works.html', [
+
+  { t:'h1', c:'How it works' },
+  { t:'p', c:'Two halves: learning a voice from your samples, and applying it to a document. Everything author-specific lives in one portable directory — the voice pack. The engine is generic.' },
+
+  section('1 · Learning: samples → voice pack', [
+    codeBlock('data/you/\n  training-data/     your files (md, txt, docx, pptx, pdf) — never modified\n  params/            ALL derived state — deletable, rebuilt by `revoice learn`\n    index.jsonl      every doc classified: register / polish / domain + fingerprint\n    profiles/        distilled voice description per register (editable)\n    exemplars/       your best passages per register\n    baselines.json   statistical centroids: function words, n-grams, rhythm, punctuation\n    calibration.json your corpus scored against itself — the self-score band\n    style.yaml       your rules, phrase preferences, word choices, hard swaps (editable)\n    rubrics.yaml     judging dimensions for the critic (editable)\n    .gitignore       the pack protects itself from accidental commits'),
+    { t:'p', c:'The classifier model reads each document once and tags it: which register (professional / casual / fiction — discovered from your corpus, not a fixed list), how polished (polished / draft / brain-dump), what domains. Deterministic code fingerprints it: function-word frequencies (the classic authorship signal), character and word n-grams, sentence-length distribution, punctuation habits.' },
+    { t:'p', c:'Then the pack is calibrated against itself: every document is scored against its own register’s baseline. If your professional writing self-scores 79 ± 11, that band is what "sounds like you" MEANS, numerically — every later measurement is read against it, never against an absolute scale.' },
+    { t:'p', c:'The result is three representations of one voice: statistical (baselines — can measure but not generate), descriptive (profile + exemplars + style.yaml — feed the rewrite prompt), and eventually parametric (a fine-tuned adapter — the voice in weights). Each tier is checked by the one below it.' }
+  ]),
+
+  section('2 · Applying: three passes over a document', [
+    codeBlock('pass 0  plan      deterministic, no LLM: what kind of document is this?\n                  content blend, math/citation/dialogue density, chunking seams,\n                  per-segment treatment (revoice / cleanup-only / protect)\n\npass 1  generate  parse to spans (structure locked away from the LLM)\n                  attribute each span against your baseline:\n                    on-target  -> untouched, byte-identical\n                    off-target -> rewritten with profile + exemplars + style rules,\n                                  span cautions, rolling read-only context\n                  validate: numbers, names, length — fail keeps the original\n                  lint: AI-tell phrases -> one retry\n                  critique (optional): anchored-rubric judging with reject gates\n\npass 2  cohesion  optional editing sweep over seams between spans\n\nemit    document (same format) + span-level diff + before/after voice match'),
+    cardRow([
+      { title:'Why spans?', content:'Rewriting whole documents loses structure and makes review impossible. Spans make structure loss impossible by construction, every change diffable, and the minimal-touch rule enforceable per paragraph.' },
+      { title:'Why measure first?', content:'The single worst failure is rewriting text that was already right. Attribution against your calibrated baseline is what lets revoice leave your sentences alone — with a number attached to the decision.' }
+    ])
+  ]),
+
+  section('3 · Verification: layered, mostly deterministic', [
+    { t:'ul', c:[
+      { t:'li', c:'Deterministic validation — every number, named entity, and length bound checked in code; a failing rewrite is discarded and the original kept.' },
+      { t:'li', c:'AI-tell lint — a regex list of machine-writing mannerisms ("delve", "in today’s fast-paced world", em-dash chains…) scanned on OUTPUT; extendable per voice.' },
+      { t:'li', c:'Stylometric voice match — output scored against your baseline; the report shows match-before → match-after, and document heterogeneity should DROP.' },
+      { t:'li', c:'Rubric critique — an LLM judges each rewrite on anchored categorical scales (voice fidelity, claim integrity, verbosity, AI register). The model picks a named choice; all numbers are computed in code. Failing spans revert.' },
+      { t:'li', c:'You — the review GUI shows every span side by side with accept / reject / edit. Your decisions are the only actual ground truth.' }
+    ]}
+  ]),
+
+  section('4 · The flywheel: prompts → weights', [
+    { t:'p', c:'Prompt-based rewriting is an impressionist working from three pages of your writing — good, but it has a ceiling, and the base model’s own register keeps tugging. The endgame is fine-tuning: your voice in the weights of a small local model.' },
+    codeBlock('review in the GUI          accept / edit decisions -> pairs.jsonl\nrevoice train prep you     + de-voicing bootstrap: an LLM strips the voice from\n                             your polished passages -> (generic, authentic) pairs\n                           -> train.jsonl / valid.jsonl (chat format)\n                           -> run_mlx.sh (Apple Silicon) · train_unsloth.py (CUDA)\n\nsh run_mlx.sh              overnight LoRA -> adapters/\nmlx_lm.server --adapter-path adapters   -> revoice uses it as its rewriter\n\n# archival: merge + convert to GGUF -> the tuned voice runs forever via llama.cpp'),
+    { t:'p', c:'Adoption is gated: the tuned model must beat the prompted baseline on the stylometric match AND the rubric verdicts before it becomes your default rewriter. Measured, not assumed.' }
+  ]),
+
+  { t:'p', c:[ { t:'a', a:{href:'background.html'}, c:'Background: the stylometry and judging theory →' } ]}
+]));
+</script>
+</body>
+</html>

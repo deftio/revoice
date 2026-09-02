@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>revoice — rewrite documents in your own voice</title>
+<meta name="description" content="revoice learns your writing voice from your own documents and rewrites any text to sound like you — structure preserved, meaning preserved, fully local.">
+<script src="https://cdn.jsdelivr.net/npm/bitwrench/dist/bitwrench.umd.min.js"></script>
+<script src="site.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<script>
+bw.loadStyles(THEME);
+
+bw.mount('#app', sitePage('index.html', [
+
+  { t:'p', a:{style: bw.s({fontSize:'1.18em', maxWidth:'46em'})},
+    c:'You write something. An AI "cleans it up." You tweak it. Now it reads like a weird hybrid of two authors — and one of them is a machine. revoice fixes that: it learns YOUR voice from your own writing and rewrites any document so it reads as one author. You.' },
+
+  { t:'p', c:[
+    { t:'a', a:{href:'https://github.com/deftio/revoice'}, c:{t:'img',a:{src:'https://img.shields.io/badge/License-BSD%202--Clause-blue.svg',alt:'License'}} }, ' ',
+    { t:'a', a:{href:'https://github.com/deftio/revoice/actions/workflows/ci.yml'}, c:{t:'img',a:{src:'https://github.com/deftio/revoice/actions/workflows/ci.yml/badge.svg',alt:'CI'}} }, ' ',
+    { t:'img', a:{src:'https://img.shields.io/badge/coverage-100%25-brightgreen.svg', alt:'Coverage'} }
+  ]},
+
+  section('What it does', [
+    { t:'p', c:'Feed revoice a folder of your writing — notes, essays, reports, fiction, anything. It builds a voice pack: a statistical fingerprint of how you write (sentence rhythm, word habits, punctuation), a distilled profile of your voice per register (professional, casual, fiction, …), and a bank of your best passages. Then any document you run through it — a brain dump, an AI-assisted draft, a patchwork of pasted fragments — comes back in your voice, with an audit trail of every change.' },
+    cardRow([
+      { title:'Structure is inviolable', content:'The language model only ever sees text spans with IDs — never document structure. Code blocks, tables, links, math, and citations survive by construction, not by hope.' },
+      { title:'Minimal-touch', content:'Every paragraph is measured against your voice first. Text that is already you passes through byte-identical. revoice exists to protect your sentences, not replace them.' }
+    ]),
+    cardRow([
+      { title:'Local and private', content:'Runs entirely on your machine with Ollama or any local model server. Your corpus never leaves your disk, voice packs ship with their own .gitignore, and CI-grade tooling refuses to let personal data into a repo.' },
+      { title:'Measured, not vibed', content:'Voice match is scored with real stylometrics — Burrows’ Delta, n-gram profiles, rhythm histograms — calibrated against your own corpus. Quality is judged by anchored rubrics, never an invented "0.85 confidence".' }
+    ])
+  ]),
+
+  section('Who it’s for', [
+    { t:'ul', c:[
+      { t:'li', c:'Writers and engineers who use AI assistance but refuse to sound like it — the de-AI-ify case.' },
+      { t:'li', c:'Anyone with a fast-mode: brain-dump now, restore your professional (or fiction) voice later — register transfer within one author.' },
+      { t:'li', c:'People assembling documents from many sources who need them to leave in one consistent voice.' }
+    ]}
+  ]),
+
+  section('Sixty seconds', [
+    codeBlock('pip install revoice        # or clone + uv sync --all-extras\n\nrevoice voices add you\n# drop your writing into data/you/training-data/\nrevoice learn you                          # index -> profiles -> baselines\nrevoice run draft.md -o out.md --voice you # revoice a document\nrevoice stats out.md --voice you           # objective: did it move toward you?\nrevoice serve --gui                        # review each change, accept/reject/edit'),
+    { t:'p', c:['Every review you make becomes training data: revoice can build a fine-tuning set and generate ready-to-run LoRA tooling (Apple Silicon or CUDA), so eventually your voice lives in model weights — and exports to a GGUF file that will run forever. ',
+      { t:'a', a:{href:'how-it-works.html'}, c:'How it works →' }]}
+  ]),
+
+  section('Try it right now', [
+    { t:'p', c:['The ', { t:'a', a:{href:'demo.html'}, c:'in-browser demo' },
+      ' scores any text you paste against two example voices (Mark Twain and Charles Darwin, built from public-domain corpora) using the same stylometrics the tool runs locally. No server, no upload — the analysis happens in your browser.' ]}
+  ])
+]));
+</script>
+</body>
+</html>

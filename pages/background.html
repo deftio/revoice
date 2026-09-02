@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>revoice — background</title>
+<meta name="description" content="The theory behind revoice: stylometry and authorship attribution, anchored rubric judging instead of LLM confidence scores, agreement as a distribution, and the longevity/privacy philosophy.">
+<script src="https://cdn.jsdelivr.net/npm/bitwrench/dist/bitwrench.umd.min.js"></script>
+<script src="site.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<script>
+bw.loadStyles(THEME);
+
+bw.mount('#app', sitePage('background.html', [
+
+  { t:'h1', c:'Background' },
+  { t:'p', c:'revoice leans on ideas that predate language models — some by decades. This page is the reading-between-the-lines: why the design is the way it is.' },
+
+  section('Stylometry: voice is measurable', [
+    { t:'p', c:'Authorship attribution is a mature field. Its most durable finding: an author’s identity lives less in WHAT they say than in the small, unconscious machinery — how often they use "the", "of", "but"; how sentence lengths distribute; which punctuation they reach for. These signals are content-independent and very hard to fake.' },
+    { t:'ul', c:[
+      { t:'li', c:'Burrows’ Delta — z-scores of function-word frequencies against a reference corpus; effectively a standardized linear discriminator, and still the field’s workhorse.' },
+      { t:'li', c:'Character n-gram profiles — frequency profiles of 3-character sequences; repeatedly the strongest single feature in attribution studies.' },
+      { t:'li', c:'Rhythm and punctuation — sentence-length histograms, burstiness, per-sentence punctuation rates.' }
+    ]},
+    { t:'p', c:'revoice uses these three ways: to ATTRIBUTE each paragraph before rewriting (minimal-touch), to SCORE outputs (did the document move toward you?), and to CALIBRATE — your corpus is scored against itself, and every measurement is read against that self-band rather than an absolute scale. Two important caveats it also respects: stylometrics need text length (scores under ~150 words are flagged noisy), and a statistical match is necessary but not sufficient — which is why an LLM critic and, ultimately, you sit above it.' }
+  ]),
+
+  section('The AI-register problem', [
+    { t:'p', c:'Large language models have a voice — stock transitions ("Moreover,"), hedge-then-assert constructions, rule-of-three parallelism, tidy summarizing closers, promotional adjectives. When you co-write with one, that register bleeds in, and the result reads as a hybrid of you and the machine. revoice treats this concretely: a deterministic, user-extendable lint of AI tells runs on every output (and can score inputs — how AI-flavored is this draft?), the rewrite prompt bans the patterns by name, and one rubric dimension asks the critic to detect machine mannerisms outright.' },
+    { t:'p', c:'A subtlety worth naming: revoice is NOT a "humanizer". Those tools aim at generic-human to defeat detectors. revoice aims at a specific human — you — and its measure of success is your corpus, not a detector’s verdict.' }
+  ]),
+
+  section('Judging without fake numbers', [
+    { t:'p', c:'Ask a model "rate this 0–1" and you get a number that clusters at 0.7–0.9 regardless of quality, varies run to run, and means nothing across prompts. Humans fail the same way — which is why every field that needed repeatable judgment abandoned free-form scores: behaviorally-anchored rating scales in personnel work, Apgar in delivery rooms, Glasgow in emergency medicine, structured rubrics in grading. Nobody agrees on "7/10". Everyone agrees on "did X, Y, or Z happen".' },
+    { t:'p', c:'So revoice judges with anchored categories: each quality dimension (voice fidelity, claim integrity, verbosity, AI register) has named choices with behavioral criteria. The model answers with one word; scores, weights, and composites are computed in code you can read and version. The rubric engine is generic and stands alone — it can judge any LLM output, or hand the same YAML to human raters.' },
+    { t:'p', c:'When judgments are repeated, agreement is reported as a DISTRIBUTION, not a scalar: winner share, winner gap, effective number of answers (1/Σp²), and decisiveness normalized to the choice space. A 51/49 split and a 95/5 split elect the same winner but are entirely different events — and the descriptors keep that difference visible. Derived confidence, never asserted confidence.' }
+  ]),
+
+  section('Why fine-tuning is the endgame', [
+    { t:'p', c:'Prompting keeps your voice in working memory: a profile and three exemplars re-read on every call, with the base model’s own register pulling the whole time. Fine-tuning is skill acquisition — the mapping from "any text" to "your text" moves into the weights of a small local model. Practical consequences: prompts shrink to almost nothing, a small tuned model beats a large prompted one at this narrow task, and the whole thing runs on a laptop.' },
+    { t:'p', c:'The training data comes from the tool’s own use: your accept/edit decisions in the review GUI (gold-standard pairs), plus a bootstrap where an LLM strips the voice from your polished passages, producing (generic → authentic) pairs — exactly the mapping the model must learn, available before the tool has any history.' }
+  ]),
+
+  section('Longevity and privacy, as engineering constraints', [
+    { t:'ul', c:[
+      { t:'li', c:'Built to run untouched in five years: locked dependencies with a pinned interpreter, a small boring dep tree, a pure-stdlib stats core, a no-build-step single-file GUI, and providers isolated in ~40-line files (APIs are the one thing that will drift).' },
+      { t:'li', c:'The archival floor: a tuned voice merges to a GGUF file and runs via llama.cpp — dependency-free C++ that builds from source on anything. An ancient model that still writes like you beats a state-of-the-art API that returns 410 Gone.' },
+      { t:'li', c:'Voice packs are personal data and defend themselves: each carries its own .gitignore, the doctor audits git visibility, and CI tooling refuses tracked corpora, env files, or secret-shaped strings. Layers that help, not theater.' }
+    ]}
+  ]),
+
+  section('Further reading', [
+    { t:'ul', c:[
+      { t:'li', c:['Architecture & roadmap: ', { t:'a', a:{href:'https://github.com/deftio/revoice/blob/main/docs/architecture.md'}, c:'docs/architecture.md' }] },
+      { t:'li', c:['The rubric module (standalone, with its own README): ', { t:'a', a:{href:'https://github.com/deftio/revoice/tree/main/revoice/rubric'}, c:'revoice/rubric/' }] },
+      { t:'li', c:['Burrows, J. — "Delta: a Measure of Stylistic Difference" (2002); Kešelj et al. — character n-gram profiles (2003); the stylometry literature generally.' ] }
+    ]}
+  ]),
+
+  { t:'p', c:[ { t:'a', a:{href:'demo.html'}, c:'See the stylometrics run live in the demo →' } ]}
+]));
+</script>
+</body>
+</html>

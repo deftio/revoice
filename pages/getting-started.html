@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>revoice — getting started</title>
+<meta name="description" content="Install revoice, configure a local or cloud LLM backend, build your voice pack, and revoice your first document.">
+<script src="https://cdn.jsdelivr.net/npm/bitwrench/dist/bitwrench.umd.min.js"></script>
+<script src="site.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<script>
+bw.loadStyles(THEME);
+
+bw.mount('#app', sitePage('getting-started.html', [
+
+  { t:'h1', c:'Getting started' },
+
+  section('Install', [
+    { t:'p', c:'Python ≥ 3.10. For rewriting you also need an LLM backend — Ollama running locally (recommended, fully private) or an API key (Anthropic / OpenRouter / any OpenAI-compatible endpoint). The deterministic tools (stats, plan) and the test suite need no LLM at all.' },
+    codeBlock('pip install revoice            # or: pipx install revoice · uv tool install revoice\n\n# from source (gets the bundled example voices):\ngit clone https://github.com/deftio/revoice && cd revoice\nuv sync --all-extras           # exact pinned env via uv.lock\nuv run revoice --version'),
+    { t:'p', c:'With no config file, revoice runs against a built-in offline stub — everything works, but rewrites are canned. Point it at a real model:' },
+    codeBlock('cp revoice.example.yaml revoice.yaml   # self-documenting; defaults to local Ollama\nrevoice doctor                         # config + one round-trip per provider + privacy audit'),
+    { t:'p', c:'Three model roles, independently configured: classifier (used by learn — cheap and fast is fine), rewriter (must nail your voice), critic (judges, never writes — keep it a different model family than the rewriter).' }
+  ]),
+
+  section('Try the bundled example voice', [
+    codeBlock('mkdir -p data && cp -r examples/voices/twain data/twain\nrevoice learn twain\n\necho "gotta fix the intro, it reads all wrong" > draft.md\nrevoice run draft.md -o out.md --voice twain --register fiction -s 1.0\nrevoice stats draft.md --voice twain      # objective voice match, no LLM needed'),
+    { t:'p', c:'Mark Twain (fiction + essay registers) and Charles Darwin (memoir + science) ship as example packs — public-domain corpora from Project Gutenberg, so you can exercise the whole pipeline before committing your own writing.' }
+  ]),
+
+  section('Build your own voice', [
+    codeBlock('revoice voices add you\n# drop your writing into data/you/training-data/ — md, txt, docx, pptx, pdf, any mix\nrevoice learn you\nrevoice run anything.md -o anything.you.md --voice you'),
+    { t:'p', c:'Corpus guidance: dozens of documents works, hundreds is excellent. Pre-AI writing is ideal — it teaches your voice, not a machine’s. Include your range: polished pieces AND brain dumps (revoice uses the contrast). Everything stays on your machine; the pack ships with its own .gitignore.' }
+  ]),
+
+  section('The commands', [
+    { t:'div', a:{style:bw.s({overflowX:'auto'})}, c:{ t:'table', a:{class:'bw_table', style:bw.s({width:'100%'})}, c:[
+      { t:'thead', c:{t:'tr', c:[{t:'th',c:'command'},{t:'th',c:'what it does'}]} },
+      { t:'tbody', c:[
+        ['voices add / list-voices', 'create / list voice packs'],
+        ['learn <voice>', 'classify corpus → index, profiles, exemplars, baselines (incremental — rerun after adding files)'],
+        ['plan <file>', 'deterministic document eval: kind, blend, densities, chunk seams — zero LLM'],
+        ['run <file>', 'revoice a document · --strength 0..1 · --register · --critique · --cohesion · --raw · --json'],
+        ['stats <file>', 'fingerprint + content blend + voice match · --format text|json|md|html'],
+        ['judge <a> <b>', 'rubric-judge a rewrite against its original'],
+        ['serve --gui', 'API server + review GUI (accept/reject/edit feeds the training set)'],
+        ['train prep <voice>', 'build fine-tuning dataset + ready-to-run MLX / unsloth scripts'],
+        ['doctor', 'config, provider round-trips, privacy audit'],
+        ['help <topic>', 'man-page docs: workflow · registers · config · providers · voicepacks · pipeline · privacy']
+      ].map(function(r){ return {t:'tr', c:[{t:'td', c:{t:'code', c:'revoice '+r[0]}}, {t:'td', c:r[1]}]}; }) }
+    ]}}
+  ]),
+
+  section('Use it as a service', [
+    { t:'p', c:'Every command is also an API endpoint (revoice serve): POST /v1/revoice for text, /v1/revoice-file for async jobs with a reviewable diff, /v1/stats, /v1/plan, /v1/judge, plus the voice lifecycle. The CLI and API are thin clients of the same core — pipeline it, script it, or click it.' },
+    codeBlock('revoice serve --gui                 # localhost:7333 — GUI at /, OpenAPI docs at /docs\ncurl -s -X POST localhost:7333/v1/revoice \\\n  -H "content-type: application/json" \\\n  -d \'{"voice":"you","text":"gotta fix the intro"}\'')
+  ]),
+
+  { t:'p', c:[ { t:'a', a:{href:'how-it-works.html'}, c:'← How it works' }, '  ·  ',
+               { t:'a', a:{href:'demo.html'}, c:'Try the in-browser demo →' } ]}
+]));
+</script>
+</body>
+</html>
