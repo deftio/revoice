@@ -7,7 +7,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@v6.0.3
       # setup-uv publishes immutable tags only (no moving @vN) as of v8
       - uses: astral-sh/setup-uv@v10.0.1
       - name: privacy gate — no user data, env files, or secrets in git
