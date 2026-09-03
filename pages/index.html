@@ -15,15 +15,16 @@ bw.loadStyles(THEME);
 
 bw.mount('#app', sitePage('index.html', [
 
-  { t:'h1', c:'Rewrite documents in your own voice.' },
-  { t:'p', a:{style: bw.s({fontSize:'1.18em', maxWidth:'46em'})},
-    c:'You write something. An AI "cleans it up." You tweak it. Now it reads like a weird hybrid of two authors — and one of them is a machine. revoice fixes that: it learns YOUR voice from your own writing and rewrites any document so it reads as one author. You.' },
-
-  { t:'p', c:[
+  { t:'p', a:{style: bw.s({margin:'0.9em 0 0 0'})}, c:[
+    { t:'img', a:{src:'https://img.shields.io/badge/version-0.1.0-4a6fa5.svg', alt:'Version'} }, ' ',
     { t:'a', a:{href:'https://github.com/deftio/revoice'}, c:{t:'img',a:{src:'https://img.shields.io/badge/License-BSD%202--Clause-blue.svg',alt:'License'}} }, ' ',
     { t:'a', a:{href:'https://github.com/deftio/revoice/actions/workflows/ci.yml'}, c:{t:'img',a:{src:'https://github.com/deftio/revoice/actions/workflows/ci.yml/badge.svg',alt:'CI'}} }, ' ',
     { t:'img', a:{src:'https://img.shields.io/badge/coverage-100%25-brightgreen.svg', alt:'Coverage'} }
   ]},
+
+  { t:'h1', c:'Use AI to rewrite documents in your own voice.' },
+  { t:'p', a:{style: bw.s({fontSize:'1.18em'})},
+    c:'You write something. An AI "cleans it up." You tweak it. Now it reads like a weird hybrid of two authors — and one of them is a machine. revoice fixes that: it learns YOUR voice from your own writing and rewrites any document so it reads as one author. You.' },
 
   section('What it does', [
     { t:'p', c:'Feed revoice a folder of your writing — notes, essays, reports, fiction, anything. It builds a voice pack: a statistical fingerprint of how you write (sentence rhythm, word habits, punctuation), a distilled profile of your voice per register (professional, casual, fiction, …), and a bank of your best passages. Then any document you run through it — a brain dump, an AI-assisted draft, a patchwork of pasted fragments — comes back in your voice, with an audit trail of every change.' },

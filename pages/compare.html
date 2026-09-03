@@ -75,7 +75,7 @@ function compare(){
 
 bw.mount('#app', sitePage('compare.html', [
   { t:'h1', c:'Compare two texts' },
-  { t:'p', a:{style: bw.s({maxWidth:'48em'})},
+  { t:'p',
     c:'Use this when you write something and then have others — AI or not — edit your copy, and you want a quick check that your style survived. Paste your original as the REFERENCE and the edited version as the CANDIDATE.' },
   { t:'p', c:'The reference becomes a live baseline — windowed, aggregated, self-calibrated, exactly what revoice does with a full corpus, in miniature — and the candidate is scored against it. Entirely in your browser: nothing is uploaded, nothing leaves this page.' },
   { t:'div', a:{class:'cmp_grid'}, c:[

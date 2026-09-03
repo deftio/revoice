@@ -16,9 +16,11 @@ bw.loadStyles(THEME);
 bw.mount('#app', sitePage('how-it-works.html', [
 
   { t:'h1', c:'How it works' },
-  { t:'p', a:{style: bw.s({fontSize:'1.08em', maxWidth:'46em'})},
-    c:'revoice takes writing samples and learns a model of how to write in that voice. To get started, it needs a folder of the author’s writing — notes, essays, reports, fiction, any mix. It reads that corpus and builds a voice pack: statistical fingerprints of how the author writes, a distilled description of the voice per register, and a bank of the author’s best passages. Then, given any input text, it applies that voice model to rewrite the text — preserving the intent, the facts, and the document’s structure, while restoring the learned voice.' },
-  { t:'p', c:'Everything author-specific lives in the voice pack, one portable directory. The engine is generic. The two halves in detail:' },
+  { t:'p', a:{style: bw.s({fontSize:'1.08em'})},
+    c:'Every writer has a voice — the rhythm of your sentences, the words you reach for, the way you land a paragraph. revoice learns that voice from writing you have already done. Give it a folder of your work — notes, essays, reports, stories, in any mixture — and it studies how you write: the measurable habits, the characteristic turns of phrase, the passages that sound most like you. From these it builds a portrait of your voice.' },
+  { t:'p', a:{style: bw.s({fontSize:'1.08em'})},
+    c:'From then on, hand it any piece of text — a rough draft, a document others have edited, something an AI helped with — and revoice rewrites it the way you would have written it. The meaning, the facts, and the structure stay exactly where they were. The voice comes home.' },
+  { t:'p', c:'Everything it learns about you lives in one portable folder, the voice pack; the engine itself knows nothing about any particular author. The two halves in detail:' },
 
   section('1 · Learning: samples → voice pack', [
     codeBlock('data/you/\n  training-data/     your files (md, txt, docx, pptx, pdf) — never modified\n  params/            ALL derived state — deletable, rebuilt by `revoice learn`\n    index.jsonl      every doc classified: register / polish / domain + fingerprint\n    profiles/        distilled voice description per register (editable)\n    exemplars/       your best passages per register\n    baselines.json   statistical centroids: function words, n-grams, rhythm, punctuation\n    calibration.json your corpus scored against itself — the self-score band\n    style.yaml       your rules, phrase preferences, word choices, hard swaps (editable)\n    rubrics.yaml     judging dimensions for the critic (editable)\n    .gitignore       the pack protects itself from accidental commits'),

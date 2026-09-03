@@ -28,10 +28,11 @@ var GOATCOUNTER_CODE = 'deftio';
 
 /* ---- site styles: clean lines, one place, bitwrench-idiomatic ---- */
 bw.injectCSS(bw.css({
-  'body': { background: '#fbfbfa', color: '#23262b' },
+  'html': { fontSize: '16px' },
+  'body': { background: '#fbfbfa', color: '#23262b', lineHeight: '1.55' },
   '.rv_topbar': { position: 'sticky', top: '0', zIndex: '50', background: '#fffffffa',
                   borderBottom: '1px solid #e3e4e2', backdropFilter: 'blur(4px)' },
-  '.rv_topbar_inner': { maxWidth: '920px', margin: '0 auto', padding: '0.55em 1em',
+  '.rv_topbar_inner': { maxWidth: '1280px', margin: '0 auto', padding: '0.55em 3rem',
                         display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '0.2em 1.1em' },
   '.rv_mark': { display: 'inline-block', background: '#4a6fa5', color: '#fff',
                 fontFamily: 'Menlo,Consolas,monospace', fontWeight: '700', fontSize: '1.05em',
@@ -44,12 +45,18 @@ bw.injectCSS(bw.css({
                  padding: '0.5em 0.1em', borderBottom: '2px solid transparent' },
   '.rv_nav a:hover': { color: '#4a6fa5' },
   '.rv_nav a.rv_active': { color: '#4a6fa5', borderBottomColor: '#4a6fa5', fontWeight: '600' },
-  '.rv_wrap': { maxWidth: '920px', margin: '0 auto', padding: '0 1em' },
+  /* bitwrench-site geometry: 1280px wide cap, 3rem gutters (1rem on small screens) */
+  '.rv_wrap': { maxWidth: '1280px', margin: '0 auto', padding: '0 3rem' },
+  '@media (max-width: 768px)': {
+    '.rv_wrap': { padding: '0 1rem' },
+    '.rv_topbar_inner': { padding: '0.55em 1rem' }
+  },
   '.rv_hero': { padding: '1.3em 0 0 0' },
-  'h1': { fontSize: '1.85em', letterSpacing: '-0.01em', margin: '0.4em 0 0.25em 0' },
-  'h2': { margin: '1.45em 0 0.5em 0', paddingBottom: '0.2em',
-          borderBottom: '1px solid #e6e7e5', fontSize: '1.3em' },
-  'h3': { margin: '0.9em 0 0.35em 0' },
+  'h1': { fontSize: '1.7em', letterSpacing: '-0.01em', margin: '0.5em 0 0.25em 0', fontWeight: '650' },
+  'h2': { margin: '2.3em 0 0.55em 0', paddingBottom: '0.25em',
+          borderBottom: '1px solid #e6e7e5', fontSize: '1.12em', fontWeight: '650',
+          color: '#39414d' },
+  'h3': { margin: '1em 0 0.35em 0', fontSize: '1.02em' },
   'p': { margin: '0.55em 0' },
   'ul': { margin: '0.5em 0', paddingLeft: '1.4em' },
   'li': { margin: '0.3em 0' },
