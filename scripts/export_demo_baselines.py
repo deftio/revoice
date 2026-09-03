@@ -20,6 +20,7 @@ from revoice.core.stylometry import (  # noqa: E402
     FUNCTION_WORDS,
     char_ngram_profile,
     fingerprint,
+    word_bigram_profile,
 )
 
 ROOT = Path(__file__).parent.parent
@@ -79,8 +80,13 @@ def build(voice_dir: Path) -> dict:
             for k, v in char_ngram_profile(t).items():
                 cent[k] += v / len(texts)
         ngrams = {k: round(v, 6) for k, v in cent.most_common(TOP_NGRAMS)}
+        bcent: Counter = Counter()
+        for t in texts:
+            for k, v in word_bigram_profile(t).items():
+                bcent[k] += v / len(texts)
+        bigrams = {k: round(v, 6) for k, v in bcent.most_common(TOP_NGRAMS)}
         registers[reg] = {"doc_count": n, "function_words": fw, "sent_len_hist": hist,
-                          "punct": punct, "char_ngrams": ngrams}
+                          "punct": punct, "char_ngrams": ngrams, "word_bigrams": bigrams}
 
     # self-calibration with the DEMO formula (mirrors docs/demo.html scoring exactly):
     for reg, texts in groups.items():
@@ -101,10 +107,15 @@ def _demo_score(text: str, base: dict) -> float:
     delta_sim = math.exp(-(sum(zs) / len(zs)) / 1.5)
     l1 = sum(abs(a - b) for a, b in zip(fp["sent_len_hist"], base["sent_len_hist"], strict=False))
     rhythm = 1 - l1 / 2
-    dot = sum(v * base["char_ngrams"].get(k, 0.0) for k, v in ng.items())
-    na = math.sqrt(sum(v * v for v in ng.values()))
-    nb = math.sqrt(sum(v * v for v in base["char_ngrams"].values()))
-    ngram = dot / (na * nb) if na and nb else 0.0
+    def _cos(a, b):
+        dot = sum(v * b.get(k, 0.0) for k, v in a.items())
+        na = math.sqrt(sum(v * v for v in a.values()))
+        nb = math.sqrt(sum(v * v for v in b.values()))
+        return dot / (na * nb) if na and nb else 0.0
+
+    ngram = _cos(ng, base["char_ngrams"])
+    if base.get("word_bigrams"):
+        ngram = 0.5 * ngram + 0.5 * _cos(word_bigram_profile(text), base["word_bigrams"])
     ps = []
     for p, (m, s) in base["punct"].items():
         ps.append(math.exp(-abs(fp["punct_per_sentence"].get(p, 0.0) - m) / max(s, 0.05)))

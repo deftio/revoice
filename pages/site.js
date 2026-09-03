@@ -5,7 +5,7 @@ var THEME = { primary: '#4a6fa5', secondary: '#3d8b52' };
 
 /* ---- analytics: GoatCounter — unsampled, no cookies, no consent banner.
    Change the site code when the account exists; localhost hits are ignored. */
-var GOATCOUNTER_CODE = 'deftio-revoice';
+var GOATCOUNTER_CODE = 'deftio';
 (function () {
   var s = document.createElement('script');
   s.async = true;
