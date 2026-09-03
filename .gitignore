@@ -12,3 +12,5 @@ revoice.yaml
 *.pem
 *.key
 credentials*
+# scratch handoff area — never committed
+tmp/

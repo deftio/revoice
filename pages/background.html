@@ -52,6 +52,12 @@ bw.mount('#app', sitePage('background.html', [
     ]}
   ]),
 
+  section('Watermarking (planned)', [
+    { t:'p', c:['revoice can mark its output as its own. Two layers are on the roadmap: document-level steganographic watermarking via ',
+      { t:'a', a:{href:'https://github.com/deftio/spab'}, c:'spab' },
+      ' — a small payload spread across the document with a fountain code, so it survives excerpting — and, once a voice runs as a fine-tuned local model, generation-time watermarking: because revoice controls the model’s weights and sampling, it can bias token choices statistically the way Google (SynthID) and Anthropic watermark their own model output. Both are opt-in, both are for proving provenance of YOUR revoiced documents, and neither touches code, URLs, or quoted material.' ]}
+  ]),
+
   section('Further reading', [
     { t:'ul', c:[
       { t:'li', c:['Architecture & roadmap: ', { t:'a', a:{href:'https://github.com/deftio/revoice/blob/main/docs/architecture.md'}, c:'docs/architecture.md' }] },

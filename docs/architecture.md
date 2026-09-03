@@ -351,6 +351,12 @@ md/txt is fragile (editors, linters, and copy-paste normalize invisible chars �
 flag zero-width chars as suspicious). Stylometric watermarking (steering word/punctuation choices)
 is more robust but conflicts with voice fidelity — rejected. Off by default.
 
+Second layer (post-fine-tune): **generation-time watermarking**. Once a voice runs as a
+tuned local model, revoice controls weights and sampling — so it can bias token selection
+statistically (SynthID-style logit watermarking, as Google/Anthropic do for their own model
+output) with a detector keyed to the voice pack. Survives light editing far better than
+whitespace steganography; complements spab's document-level fountain-coded payload.
+
 ## Open questions
 
 - Streaming API responses (SSE) — worth it for GUI feel?

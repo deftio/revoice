@@ -1,7 +1,84 @@
 /* Shared site chrome for revoice pages — bitwrench TACO components.
-   Every page: bw.loadStyles(THEME); bw.mount('#app', page(...)); */
+   Every page: bw.loadStyles(THEME); bw.mount('#app', sitePage(active, [...])); */
 
 var THEME = { primary: '#4a6fa5', secondary: '#3d8b52' };
+
+/* ---- analytics: GoatCounter — unsampled, no cookies, no consent banner.
+   Change the site code when the account exists; localhost hits are ignored. */
+var GOATCOUNTER_CODE = 'deftio-revoice';
+(function () {
+  var s = document.createElement('script');
+  s.async = true;
+  s.src = '//gc.zgo.at/count.js';
+  s.setAttribute('data-goatcounter', 'https://' + GOATCOUNTER_CODE + '.goatcounter.com/count');
+  document.head.appendChild(s);
+})();
+
+/* ---- favicon: the r< mark (placeholder until the real icon lands) ---- */
+(function () {
+  var svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>" +
+    "<rect width='64' height='64' rx='12' fill='%234a6fa5'/>" +
+    "<text x='32' y='44' font-family='Menlo,Consolas,monospace' font-size='34' " +
+    "font-weight='bold' fill='white' text-anchor='middle'>r&lt;</text></svg>";
+  var l = document.createElement('link');
+  l.rel = 'icon';
+  l.href = 'data:image/svg+xml,' + svg;
+  document.head.appendChild(l);
+})();
+
+/* ---- site styles: clean lines, one place, bitwrench-idiomatic ---- */
+bw.injectCSS(bw.css({
+  'body': { background: '#fbfbfa', color: '#23262b' },
+  '.rv_topbar': { position: 'sticky', top: '0', zIndex: '50', background: '#fffffffa',
+                  borderBottom: '1px solid #e3e4e2', backdropFilter: 'blur(4px)' },
+  '.rv_topbar_inner': { maxWidth: '920px', margin: '0 auto', padding: '0.55em 1em',
+                        display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '0.2em 1.1em' },
+  '.rv_mark': { display: 'inline-block', background: '#4a6fa5', color: '#fff',
+                fontFamily: 'Menlo,Consolas,monospace', fontWeight: '700', fontSize: '1.05em',
+                borderRadius: '7px', padding: '0.12em 0.42em', letterSpacing: '-0.03em' },
+  '.rv_brand': { display: 'inline-flex', alignItems: 'center', gap: '0.5em',
+                 textDecoration: 'none', color: 'inherit' },
+  '.rv_brand b': { fontSize: '1.18em', fontWeight: '700', letterSpacing: '0.01em' },
+  '.rv_nav': { display: 'flex', flexWrap: 'wrap', gap: '0 1.15em', marginLeft: 'auto' },
+  '.rv_nav a': { textDecoration: 'none', color: '#4b5260', fontSize: '0.95em',
+                 padding: '0.5em 0.1em', borderBottom: '2px solid transparent' },
+  '.rv_nav a:hover': { color: '#4a6fa5' },
+  '.rv_nav a.rv_active': { color: '#4a6fa5', borderBottomColor: '#4a6fa5', fontWeight: '600' },
+  '.rv_wrap': { maxWidth: '920px', margin: '0 auto', padding: '0 1em' },
+  '.rv_hero': { padding: '1.3em 0 0 0' },
+  'h1': { fontSize: '1.85em', letterSpacing: '-0.01em', margin: '0.4em 0 0.25em 0' },
+  'h2': { margin: '1.45em 0 0.5em 0', paddingBottom: '0.2em',
+          borderBottom: '1px solid #e6e7e5', fontSize: '1.3em' },
+  'h3': { margin: '0.9em 0 0.35em 0' },
+  'p': { margin: '0.55em 0' },
+  'ul': { margin: '0.5em 0', paddingLeft: '1.4em' },
+  'li': { margin: '0.3em 0' },
+  'section': { marginBottom: '0.4em' },
+  'pre.bw_card': { background: '#22262c', color: '#e8eaed', border: 'none',
+                   borderLeft: '4px solid #4a6fa5', borderRadius: '8px',
+                   padding: '0.8em 1em', margin: '0.7em 0', overflowX: 'auto',
+                   fontSize: '0.86em', lineHeight: '1.5' },
+  '.bw_row': { margin: '0.6em 0' },
+  '.bw_card': { border: '1px solid #e3e4e2', borderRadius: '10px', background: '#fff' },
+  '.bw_row .bw_card': { transition: 'box-shadow 0.15s, transform 0.15s', height: '100%' },
+  '.bw_row .bw_card:hover': { boxShadow: '0 3px 14px #0000000f', transform: 'translateY(-1px)' },
+  '.bw_table th': { borderBottom: '2px solid #4a6fa5', textAlign: 'left' },
+  '.bw_table td': { borderBottom: '1px solid #ececea' },
+  '.bw_table tr:hover td': { background: '#f4f6f9' },
+  'footer.rv_footer': { borderTop: '1px solid #e6e7e5', marginTop: '2em',
+                        padding: '1em 0 1.6em 0', opacity: '0.75', fontSize: '0.88em' },
+  /* buttons: explicit treatment (theme's bare .bw_btn is minimal) */
+  'button.bw_btn, a.bw_btn': { display: 'inline-block', font: 'inherit', fontSize: '0.93em',
+    padding: '0.42em 1em', margin: '0 0.35em 0.35em 0', cursor: 'pointer',
+    background: '#fff', color: '#3c4350', border: '1px solid #d5d7db', borderRadius: '8px',
+    textDecoration: 'none', transition: 'border-color 0.12s, color 0.12s, background 0.12s' },
+  'button.bw_btn:hover, a.bw_btn:hover': { borderColor: '#4a6fa5', color: '#4a6fa5' },
+  '.bw_btn.bw_primary': { background: '#4a6fa5', color: '#fff', border: '1px solid #4a6fa5' },
+  '.bw_btn.bw_primary:hover': { background: '#3d5d8c', color: '#fff' },
+  '.rv_chip': { fontSize: '0.85em', padding: '0.28em 0.85em', borderRadius: '1em',
+                background: '#f2f4f7' },
+  '.rv_chip:hover': { background: '#e8edf4' }
+}));
 
 var NAV = [
   ['index.html', 'Overview'],
@@ -9,41 +86,37 @@ var NAV = [
   ['getting-started.html', 'Getting started'],
   ['background.html', 'Background'],
   ['demo.html', 'Demo'],
+  ['compare.html', 'Compare'],
   ['https://github.com/deftio/revoice', 'GitHub']
 ];
 
 function siteHeader(active) {
-  return { t: 'header', a: { style: bw.s({ padding: '1.6em 0 0.6em 0' }) }, c: [
-    { t: 'div', c: [
-      { t: 'a', a: { href: 'index.html', style: bw.s({ textDecoration: 'none' }) },
-        c: { t: 'span', a: { style: bw.s({ fontSize: '1.5em', fontWeight: '700' }) }, c: 'revoice' } },
-      { t: 'span', a: { style: bw.s({ opacity: '0.65', marginLeft: '0.8em', fontSize: '0.95em' }) },
-        c: 'rewrite documents in your own voice' }
+  return { t: 'div', a: { class: 'rv_topbar' }, c: { t: 'div', a: { class: 'rv_topbar_inner' }, c: [
+    { t: 'a', a: { class: 'rv_brand', href: 'index.html' }, c: [
+      { t: 'span', a: { class: 'rv_mark', title: 'revoice' }, c: 'r<' },
+      { t: 'b', c: 'revoice' }
     ]},
-    { t: 'nav', a: { style: bw.s({ margin: '0.7em 0' }) },
+    { t: 'nav', a: { class: 'rv_nav' },
       c: NAV.map(function (item) {
-        var isActive = item[0] === active;
-        return { t: 'a', a: { href: item[0],
-          class: isActive ? 'bw_btn bw_primary' : 'bw_btn',
-          style: bw.s({ marginRight: '0.4em', marginBottom: '0.3em', display: 'inline-block' }) },
-          c: item[1] };
+        return { t: 'a', a: { href: item[0], class: item[0] === active ? 'rv_active' : '' },
+                 c: item[1] };
       }) }
-  ]};
+  ]}};
 }
 
 function siteFooter() {
-  return { t: 'footer', a: { style: bw.s({ padding: '2.5em 0 1.5em 0', opacity: '0.7', fontSize: '0.88em' }) }, c: [
+  return { t: 'footer', a: { class: 'rv_footer' }, c: [
+    { t: 'span', a: { class: 'rv_mark', style: bw.s({ fontSize: '0.8em', marginRight: '0.6em' }) }, c: 'r<' },
     'BSD-2-Clause © M. A. Chatterjee / ',
     { t: 'a', a: { href: 'https://github.com/deftio' }, c: 'deftio' },
     ' · built with ',
     { t: 'a', a: { href: 'https://github.com/deftio/bitwrench' }, c: 'bitwrench' },
-    ' · no trackers, no cookies'
+    ' · no cookies · privacy-preserving analytics (GoatCounter)'
   ]};
 }
 
 function codeBlock(s) {
-  return { t: 'pre', a: { class: 'bw_card', style: bw.s({ overflowX: 'auto', fontSize: '0.87em', lineHeight: '1.45' }) },
-           c: { t: 'code', c: s } };
+  return { t: 'pre', a: { class: 'bw_card' }, c: { t: 'code', c: s } };
 }
 
 function section(title, kids) {
@@ -58,6 +131,9 @@ function cardRow(cards) {
 }
 
 function sitePage(active, contentKids) {
-  return { t: 'div', a: { class: 'bw_container', style: bw.s({ maxWidth: '900px' }) },
-    c: [siteHeader(active)].concat(contentKids).concat([siteFooter()]) };
+  return { t: 'div', c: [
+    siteHeader(active),
+    { t: 'div', a: { class: 'rv_wrap' },
+      c: [{ t: 'div', a: { class: 'rv_hero' } }].concat(contentKids).concat([siteFooter()]) }
+  ]};
 }

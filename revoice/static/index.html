@@ -6,14 +6,15 @@
 <title>revoice</title>
 <script src="https://cdn.jsdelivr.net/gh/deftio/bitwrench/bitwrench.min.js"></script>
 <style>
-:root{--acc:#4a6fa5;--ok:#3d8b52;--warn:#c78d2c;--bad:#b8433c;--bg:#f7f7f5;--card:#fff;--ink:#22252a;--mut:#78808c;--line:#e4e4e0}
+:root{--acc:#4a6fa5;--ok:#3d8b52;--warn:#c78d2c;--bad:#b8433c;--bg:#fbfbfa;--card:#fff;--ink:#23262b;--mut:#78808c;--line:#e3e4e2}
 *{box-sizing:border-box}
 body{margin:0;font-family:-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;background:var(--bg);color:var(--ink);line-height:1.5}
-header{background:var(--acc);color:#fff;padding:.7em 1.2em;display:flex;align-items:baseline;gap:1em;flex-wrap:wrap}
-header h1{margin:0;font-size:1.25em;font-weight:650;letter-spacing:.02em}
-header .sub{opacity:.75;font-size:.85em}
-main{max-width:1060px;margin:1.2em auto;padding:0 1em}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1em 1.2em;margin-bottom:1em}
+header{position:sticky;top:0;z-index:50;background:#fffffffa;border-bottom:1px solid var(--line);backdrop-filter:blur(4px);color:var(--ink);padding:.55em 1.2em;display:flex;align-items:center;gap:.6em;flex-wrap:wrap}
+.mark{display:inline-block;background:var(--acc);color:#fff;font-family:Menlo,Consolas,monospace;font-weight:700;font-size:1.05em;border-radius:7px;padding:.12em .42em;letter-spacing:-.03em}
+header h1{margin:0;font-size:1.15em;font-weight:700;letter-spacing:.01em}
+header .sub{opacity:.6;font-size:.85em}
+main{max-width:1060px;margin:1.1em auto;padding:0 1em}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.9em 1.1em;margin-bottom:.9em}
 .row{display:flex;gap:.8em;flex-wrap:wrap;align-items:center}
 label{font-size:.85em;color:var(--mut)}
 select,input[type=text]{padding:.4em .6em;border:1px solid var(--line);border-radius:6px;font-size:.95em;background:#fff}
@@ -43,11 +44,16 @@ footer{color:var(--mut);text-align:center;font-size:.8em;padding:1.5em}
 </head>
 <body>
 <header>
+  <span class="mark">r&lt;</span>
   <h1>revoice</h1>
   <span class="sub">rewrite documents in your own voice · structure preserved</span>
   <span style="flex:1"></span>
   <span class="sub" id="health">…</span>
 </header>
+<script>
+(function(){var s="<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='12' fill='%234a6fa5'/><text x='32' y='44' font-family='Menlo,Consolas,monospace' font-size='34' font-weight='bold' fill='white' text-anchor='middle'>r&lt;</text></svg>";
+var l=document.createElement("link");l.rel="icon";l.href="data:image/svg+xml,"+s;document.head.appendChild(l);})();
+</script>
 <main>
   <div class="card">
     <div class="row">

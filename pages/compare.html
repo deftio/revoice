@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>revoice — compare two texts</title>
+<meta name="description" content="Drop a reference text and a candidate text and measure how close the voices are — Burrows' Delta, n-grams, rhythm, punctuation — entirely in your browser.">
+<script src="https://cdn.jsdelivr.net/npm/bitwrench/dist/bitwrench.umd.min.js"></script>
+<script src="site.js"></script>
+<script src="stylometry.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<script>
+bw.loadStyles(THEME);
+bw.injectCSS(bw.css({
+  '.vbar': { height: '12px', borderRadius: '4px', background: '#4a6fa5',
+             display: 'inline-block', verticalAlign: 'middle' },
+  '.cmp_grid': { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.9em' },
+  '@media (max-width: 700px)': { '.cmp_grid': { gridTemplateColumns: '1fr' } },
+  '.cmp_grid textarea': { width: '100%', font: 'inherit', fontSize: '0.93em', padding: '0.6em' }
+}));
+
+function wordsOf(t){ return ((t.toLowerCase().match(/[a-z']+/g))||[]).length; }
+
+function verdictFor(rel){
+  if (rel >= 90) return ['bw_success', 'statistically indistinguishable from the reference voice'];
+  if (rel >= 75) return ['bw_success', 'close — within the reference’s own variation band'];
+  if (rel >= 60) return ['bw_warning', 'related, but a reader may notice the difference'];
+  return ['bw_warning', 'different voice'];
+}
+
+function compare(){
+  var ref = bw.el('#ref').value || '', cand = bw.el('#cand').value || '';
+  if (ref.trim().length < 200 || cand.trim().length < 100){
+    bw.el('#results', {t:'p', c:'(need more text — a few paragraphs of reference and at least one of candidate)'});
+    return;
+  }
+  var base = buildBaseline(ref);
+  var r = score(fingerprint(cand), base);
+  var p = r.parts;
+  var v = verdictFor(r.rel);
+  var rw = wordsOf(ref), cw = wordsOf(cand);
+  var caveats = [];
+  if (rw < 500) caveats.push('reference is short (' + rw + ' words) — the baseline is coarse; 500+ works much better');
+  if (cw < 150) caveats.push('candidate is short (' + cw + ' words) — scores are noisy under ~150');
+  if (base.windows < 3) caveats.push('reference yielded only ' + base.windows + ' window(s) — variation band is a guess');
+
+  bw.el('#results', { t:'div', a:{class:'bw_card'}, c:[
+    { t:'h3', c:['voice match: ',
+      { t:'span', a:{class:'bw_badge ' + v[0]}, c: r.rel.toFixed(0) + ' / 100' },
+      ' ', { t:'span', a:{style:bw.s({opacity:'0.75', fontSize:'0.9em'})}, c: v[1] } ]},
+    { t:'p', c:['reference self-band: ' + base.self[0].toFixed(0) + ' ± ' + base.self[1].toFixed(0) +
+      ' (how much the reference varies against itself — 100 means the candidate sits inside that band)'] },
+    { t:'div', a:{style:bw.s({overflowX:'auto'})}, c:{ t:'table', a:{class:'bw_table', style:bw.s({width:'100%'})}, c:[
+      { t:'thead', c:{t:'tr', c:['component','similarity','what it measures'].map(function(h){return {t:'th',c:h};})} },
+      { t:'tbody', c:[
+        ['function words (Burrows’ Delta)', p.delta, 'unconscious grammar-word habits — the classic authorship signal (raw Δ ' + r.delta.toFixed(2) + ')'],
+        ['character n-grams', p.ngram, 'sub-word texture: spellings, morphology, spacing habits'],
+        ['sentence rhythm', p.rhythm, 'sentence-length distribution'],
+        ['punctuation', p.punct, 'per-sentence punctuation habits']
+      ].map(function(row){
+        return { t:'tr', c:[
+          { t:'td', c: row[0] },
+          { t:'td', c: { t:'span', c:[
+            { t:'span', a:{class:'vbar', style:bw.s({width: Math.max(row[1]*180,2)+'px'})} },
+            { t:'span', a:{style:bw.s({marginLeft:'0.5em', fontSize:'0.9em'})}, c:' '+row[1].toFixed(2) } ]} },
+          { t:'td', a:{style:bw.s({fontSize:'0.9em', opacity:'0.85'})}, c: row[2] } ]};
+      }) }
+    ]}},
+    caveats.length ? { t:'p', a:{style:bw.s({fontSize:'0.9em', opacity:'0.8'})},
+      c: '⚠ ' + caveats.join(' · ') } : ''
+  ]});
+}
+
+bw.mount('#app', sitePage('compare.html', [
+  { t:'h1', c:'Compare two texts' },
+  { t:'p', a:{style: bw.s({maxWidth:'48em'})},
+    c:'Use this when you write something and then have others — AI or not — edit your copy, and you want a quick check that your style survived. Paste your original as the REFERENCE and the edited version as the CANDIDATE.' },
+  { t:'p', c:'The reference becomes a live baseline — windowed, aggregated, self-calibrated, exactly what revoice does with a full corpus, in miniature — and the candidate is scored against it. Entirely in your browser: nothing is uploaded, nothing leaves this page.' },
+  { t:'div', a:{class:'cmp_grid'}, c:[
+    { t:'div', a:{class:'bw_card'}, c:[
+      { t:'p', c:{t:'b', c:'Reference — the voice to match'} },
+      { t:'textarea', a:{id:'ref', rows:'12', placeholder:'A few paragraphs (500+ words works well) of one author’s writing…'} }
+    ]},
+    { t:'div', a:{class:'bw_card'}, c:[
+      { t:'p', c:{t:'b', c:'Candidate — is this the same voice?'} },
+      { t:'textarea', a:{id:'cand', rows:'12', placeholder:'The text to test (150+ words for stable scores)…'} }
+    ]}
+  ]},
+  { t:'p', c:{ t:'button', a:{class:'bw_btn bw_primary', onclick:compare}, c:'compare voices' } },
+  { t:'div', a:{id:'results'} },
+  { t:'p', a:{style:bw.s({opacity:'0.75', fontSize:'0.9em'})},
+    c:['Honest limits: these browser metrics reliably detect drift toward machine-flavored prose and clearly different voices; two skilled authors writing in the same register and era can overlap at short lengths. The local tool adds vocabulary similarity, register attribution, content-blend analysis, and full corpus calibration, which sharpen exactly that case — see ',
+       { t:'a', a:{href:'getting-started.html'}, c:'getting started' }, '.'] }
+]));
+</script>
+</body>
+</html>

@@ -15,6 +15,7 @@ bw.loadStyles(THEME);
 
 bw.mount('#app', sitePage('index.html', [
 
+  { t:'h1', c:'Rewrite documents in your own voice.' },
   { t:'p', a:{style: bw.s({fontSize:'1.18em', maxWidth:'46em'})},
     c:'You write something. An AI "cleans it up." You tweak it. Now it reads like a weird hybrid of two authors — and one of them is a machine. revoice fixes that: it learns YOUR voice from your own writing and rewrites any document so it reads as one author. You.' },
 
@@ -40,7 +41,9 @@ bw.mount('#app', sitePage('index.html', [
     { t:'ul', c:[
       { t:'li', c:'Writers and engineers who use AI assistance but refuse to sound like it — the de-AI-ify case.' },
       { t:'li', c:'Anyone with a fast-mode: brain-dump now, restore your professional (or fiction) voice later — register transfer within one author.' },
-      { t:'li', c:'People assembling documents from many sources who need them to leave in one consistent voice.' }
+      { t:'li', c:'People assembling documents from many sources who need them to leave in one consistent voice.' },
+      { t:'li', c:['Anyone whose copy gets edited by others (AI or not) and wants a quick check that their style survived — see the ',
+        { t:'a', a:{href:'compare.html'}, c:'compare page' }, '.'] }
     ]}
   ]),
 

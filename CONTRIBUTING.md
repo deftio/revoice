@@ -34,6 +34,16 @@ casually; this project upgrades deliberately (see "Longevity posture" in the REA
   tests need a `gate: allow-secret` comment on the same line. Repo admins: also enable
   GitHub push protection (Settings → Code security) as the broad-net layer.
 
+## Previewing the site
+
+```bash
+python3 -m http.server 1138        # then http://localhost:1138/
+```
+
+(1138, not 8000 — nothing else will be squatting on it. The API server similarly
+uses 7333.) The root page redirects to `pages/`; the demo needs http (not file://)
+to load its baselines JSON.
+
 ## Style
 
 - Python: type hints, docstrings on modules and non-obvious functions. Keep files
