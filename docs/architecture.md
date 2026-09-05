@@ -129,6 +129,15 @@ GET  /v1/health
 
 ### Voice-match metrics (implemented; CLI `revoice stats`)
 
+> **See [metrics.md](metrics.md) — and run `revoice bench`.** The composite described below is
+> implemented but *not yet fit for purpose*. Measured under a topic-controlled protocol
+> (Sept 2026): AUC 0.650, Cllr 0.941 (1.0 = always answering "don't know"), and at a 5%
+> false-positive rate it keeps only 14% of the author's own text untouched. The `vocab`
+> component beats the whole composite and is largely a topic detector; `rhythm`, `delta` and
+> `punct` sit near chance; the span threshold is calibrated in the wrong units, so 79% of the
+> author's own paragraphs are classified "rewrite". metrics.md supersedes this section.
+
+
 Deterministic authorship measures against per-register baselines built during `learn`:
 Burrows' Delta (function-word z-scores; the authorship-attribution standard), char 3-gram +
 word bigram profile cosine (strongest single features in the stylometry literature), sentence-length

@@ -385,6 +385,79 @@ def status(
     typer.echo(json.dumps(pack.manifest(), indent=2))
 
 
+@app.command()
+def bench(
+    corpus: Path = typer.Argument(Path("examples/voices"),
+                                  help="Corpus root: <author>/training-data/* (voice-pack layout)."),
+    lengths: str = typer.Option("50,100,200,400,800,1600", "--lengths",
+                                help="Comma-separated query lengths in words."),
+    queries: int = typer.Option(40, "--queries", "-n",
+                                help="Queries per (author, work, length, same/different) cell."),
+    seed: int = typer.Option(17, "--seed", help="Sampling seed — runs are reproducible."),
+    max_fpr: float = typer.Option(0.05, "--max-fpr",
+                                  help="False-positive rate for the reported operating point."),
+    no_content_control: bool = typer.Option(False, "--no-content-control",
+                                            help="Skip the topic-leak comparison (roughly halves runtime)."),
+    out: Path = typer.Option(None, "--out", "-o", help="Write the full JSON report here."),
+    as_json: bool = typer.Option(False, "--json", help="Print JSON instead of the table."),
+    verbose: bool = typer.Option(False, "--verbose/--quiet", help="Per-reference-model progress."),
+):
+    """Measure whether the voice metric actually discriminates authors. [bold]No LLM required.[/bold]
+
+    Builds authorship-verification trials from a labelled corpus and reports how well
+    each candidate measure separates same-author from different-author text — by query
+    length, with calibration, and with a topic control.
+
+    [bold]Why this exists:[/bold] every revoice decision (minimal-touch, register
+    attribution, flywheel labels, prompted-vs-tuned comparisons) inherits the voice
+    metric's errors. Until it is measured, none of those can be trusted. See
+    [green]docs/metrics.md[/green].
+
+    [bold]The protocol[/bold] is work-level leave-one-out: a query's reference model never
+    contains the work the query came from, so a surviving score reflects how the author
+    writes rather than what they were writing about. Running it again with document-level
+    leave-one-out (the [bold]content control[/bold] section) shows how much apparent
+    performance was topic.
+
+    [bold]Reading it:[/bold] AUC says whether the ranking is right; cllr says whether the
+    numbers mean anything (cllr_cal is what miscalibration alone costs); tpr@fpr is the
+    operating point — the fraction of the author's own text kept untouched at a tolerable
+    false-positive rate. That last number, not a composite, is what the pipeline should use.
+
+    Examples:
+      [green]revoice bench[/green]                                    the bundled Twain + Darwin packs
+      [green]revoice bench data --queries 100 -o bench.json[/green]   your own voices, more samples
+      [green]revoice bench --lengths 50,100,200 --no-content-control[/green]   quick pass
+    """
+    from revoice.core.bench import bench as run_bench
+    from revoice.core.bench import render
+
+    try:
+        lens = tuple(int(x) for x in lengths.split(",") if x.strip())
+    except ValueError:
+        typer.secho(f"--lengths must be comma-separated integers, got {lengths!r}", fg="red")
+        raise typer.Exit(1) from None
+    if not lens:
+        typer.secho("--lengths is empty", fg="red")
+        raise typer.Exit(1)
+
+    progress = (lambda item, msg: typer.echo(f"  {item}: {msg}", err=True)) if verbose else None
+    try:
+        result = run_bench(corpus, lens, queries, seed, max_fpr, no_content_control, progress)
+    except RuntimeError as e:
+        typer.secho(str(e), fg="red")
+        raise typer.Exit(1) from None
+
+    if out:
+        out.write_text(json.dumps(result, indent=2))
+    if as_json:
+        typer.echo(json.dumps(result, indent=2))
+    else:
+        typer.echo(render(result))
+        if out:
+            typer.echo(f"\nfull report: {out}")
+
+
 def _bar(v: float, width: int = 24) -> str:
     n = int(round(v * width))
     return "█" * n + "░" * (width - n)

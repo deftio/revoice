@@ -34,9 +34,13 @@ input ── parse ── plan (deterministic) ── attribute ── rewrite �
 - **Voice packs are data.** `data/<voice>/training-data/` in → `params/` out (index,
   per-register profiles, exemplar banks, baselines, editable `style.yaml` +
   `rubrics.yaml`). Fully derived, rebuildable, portable — copy the directory.
-- **Objective voice match.** `revoice stats` scores any document against a voice's
-  corpus baselines, calibrated by the corpus's own self-scores — plus a content-blend
-  detector that spots concatenated dumps of unrelated material.
+- **The voice metric is measured, not asserted.** `revoice stats` scores a document
+  against a voice's corpus baselines; `revoice bench` then measures whether that score
+  can tell authors apart at all — AUC and forensic Cllr calibration per query length,
+  per-component ablation, and a topic control that exposes any component secretly
+  reading subject matter. No LLM, no new dependencies. The current numbers say the
+  shipped composite is **not yet fit for purpose**; see [docs/metrics.md](docs/metrics.md).
+  `stats` also carries a content-blend detector that spots concatenated dumps.
 - **Judgment without fake numbers.** Quality is judged by anchored categorical rubrics
   (see [`revoice/rubric/`](revoice/rubric/README.md)) — the model classifies, the code
   computes. Vote distributions get proper agreement descriptors (n_eff, winner gap,
@@ -131,6 +135,7 @@ spells out exactly what goes where).
 | `revoice run <file>` | revoice a document (`--strength`, `--register`, `--critique`, `--raw`, `--json`) |
 | `revoice stats <file>` | fingerprint + content blend + voice match (`--format text\|json\|md\|html`) |
 | `revoice judge a b` | rubric-judge a rewrite against its original |
+| `revoice bench [corpus]` | measure whether the voice metric actually discriminates authors — AUC/Cllr by length, ablation, topic control; no LLM |
 | `revoice train prep <voice>` | build the fine-tuning dataset (flywheel + de-voicing bootstrap) + ready-to-run unsloth/MLX scripts |
 | `revoice serve --gui` | API server + single-file review GUI |
 | `revoice doctor` | config + provider diagnostics with raw model replies |
@@ -157,13 +162,14 @@ voice outlives every API it ever called. No dependabot; upgrades are deliberate.
 
 ```
 revoice/           the package
-  core/            spans, stylometry, metrics, segments, preflight, pipeline,
-                   indexer, profiles, style, lint, rubrics, report, voicepack
+  core/            spans, stylometry, metrics, verify, bench, segments, preflight,
+                   pipeline, indexer, profiles, style, lint, rubrics, report, voicepack
   providers/       ollama, anthropic, openrouter, openai_compat, stub
   rubric/          generic anchored-rubric judging (standalone; own README)
   static/          the GUI (one HTML file)
   cli.py serve.py  typer CLI · FastAPI server
 docs/architecture.md   full design doc (three-pass model, fine-tuning path, roadmap)
+docs/metrics.md        voice-metric design, measurements, and validation plan
 examples/voices/       twain/ and darwin/ demo corpora (public domain)
 tests/                 pytest suite (stub provider — runs offline)
 ```
@@ -181,6 +187,15 @@ de-voicing bootstrap) and emits ready-to-run unsloth (CUDA) and mlx_lm (Apple
 Silicon) tooling with GGUF archival export steps. Next: corpus draft→polished
 pair mining (Phase 4), first LoRA runs + eval (Phase 5), docx/pptx round-trip
 (Phase 6).
+**Current focus — the voice metric.** Everything revoice decides (minimal-touch,
+register attribution, flywheel labels, prompted-vs-tuned comparisons) rests on one
+question: *is this passage already in the target voice?* `revoice bench` now measures
+that, and the answer today is no better than it should be — topic-controlled AUC 0.650,
+Cllr 0.941 against a 1.0 "don't know" baseline, and 14% of the author's own text kept
+untouched at a 5% false-positive rate. Fixing the instrument comes before tuning any
+model, because until it works nothing downstream is measurable.
+Full evidence, SOTA survey, and plan: [docs/metrics.md](docs/metrics.md).
+
 Details: [docs/architecture.md](docs/architecture.md).
 
 ## License

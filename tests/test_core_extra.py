@@ -102,16 +102,24 @@ def test_score_against_pack_errors(tmp_path, learned_pack):
     assert set(r2["results"]) == {r["best_register"]}
 
 
-def test_build_baselines_odd_entries(tmp_path):
+def test_build_baselines_skips_registers_with_no_readable_text(tmp_path):
+    """A baseline is built from TEXT, never from cached index fingerprints alone.
+
+    An indexed file whose text can no longer be read (deleted, or an extension whose
+    support went away) used to still yield a baseline from its stored fingerprint —
+    one with empty n-gram and tf-idf centroids, which scores garbage against anything.
+    Skipping the register is the honest outcome; `learn` then reports it as missing
+    rather than shipping a measure that cannot work.
+    """
     pack = VoicePack.create(tmp_path / "d", "odd")
-    # register whose only entry has no usable fingerprint -> skipped entirely
+    # indexed, but no readable file on disk -> no baseline at all
     pack.append_index({"path": "x.bin", "register": "nofp", "polish": "draft",
                        "domains": [], "chars": 5, "hash": "h1", "fingerprint": None})
-    # register with a fingerprint lacking sent_len_hist, file unsupported (no text)
     pack.append_index({"path": "y.bin", "register": "thin", "polish": "draft",
                        "domains": [], "chars": 5, "hash": "h2",
                        "fingerprint": {"function_word_freq": {}, "punct_per_sentence": {}}})
-    # a real doc plus a phantom unsupported one in the same register
+    # a real doc plus a phantom unreadable one in the same register: the register
+    # survives on the readable document alone
     (pack.training_dir / "real.md").write_text("Words appear in this real document for testing baselines.")
     pack.append_index({"path": "real.md", "register": "mix", "polish": "polished",
                        "domains": [], "chars": 50, "hash": "h3",
@@ -122,8 +130,16 @@ def test_build_baselines_odd_entries(tmp_path):
     seen = []
     baselines = build_baselines(pack, progress=lambda r, m: seen.append(r))
     assert "nofp" not in baselines
-    assert baselines["thin"]["sent_len_hist"] == []
-    assert "mix" in baselines and seen
+    assert "thin" not in baselines
+    assert "mix" in baselines and seen == ["mix"]
+    assert baselines["mix"]["doc_count"] == 1
+    assert baselines["mix"]["char_ngrams"]  # centroids are populated, not empty
+
+
+def test_baseline_from_texts_with_no_texts():
+    from revoice.core.metrics import baseline_from_texts
+
+    assert baseline_from_texts([]) == {}
 
 
 def test_mean_std_empty():

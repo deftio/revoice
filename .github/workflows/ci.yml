@@ -17,3 +17,5 @@ jobs:
       - name: lint — zero warnings
         run: uv run ruff check revoice/ tests/ scripts/
       - run: uv run pytest tests/ -q --cov=revoice --cov-report=term-missing --cov-fail-under=100
+      - name: voice-metric bench — must run clean on the bundled packs
+        run: uv run revoice bench examples/voices --lengths 50,200 -n 10 --no-content-control

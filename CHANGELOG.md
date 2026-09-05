@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.1.1 (unreleased)
+
+**The voice metric is now measured.** Everything revoice decides rests on one classifier
+question — *is this passage already in the target voice?* — and nothing had ever tested it.
+This release adds the instrument, and reports what it says.
+
+### Added
+- `revoice bench` + `revoice/core/bench.py` — an authorship-verification harness for the
+  voice metric. **No LLM, no new dependencies**, deterministic given a seed. Reports AUC
+  per query length, forensic calibration (Cllr / Cllr_min / Cllr_cal), the `tpr@fpr`
+  operating point, a per-component ablation, a topic control, and a plain-language verdict.
+  Corpus layout is a voice pack's, so `examples/voices` benches as-is.
+- `revoice/core/verify.py` — verification statistics in pure stdlib: AUC (Mann-Whitney with
+  tie handling), interpolated EER, `tpr_at_fpr`, PAV isotonic regression, Cllr with
+  cross-validated logistic calibration. Known-answer tested against hand-derivable values.
+- `metrics.baseline_from_texts()` — build a baseline from plain texts, so `learn` and the
+  bench share one code path instead of two that drift.
+- [`docs/metrics.md`](docs/metrics.md) — the voice-metric design doc: measurements, a survey
+  of the authorship-verification literature (Cosine Delta, Writeprints, LUAR, StyleDistance,
+  STEL-or-Content, forensic likelihood ratios), a three-space design, measured dependency
+  tiers, and the sequencing that follows.
+
+### What the measurements say
+Under a topic-controlled protocol on the bundled packs, the shipped composite scores
+**AUC 0.650** and **Cllr 0.941** (1.0 = a system that always answers "don't know"), and at a
+5% false-positive rate keeps **14%** of the author's own text untouched. The `vocab`
+component beats the whole composite and loses 0.162 AUC under topic control — it is largely
+reading subject matter; `rhythm`, `delta` and `punct` sit near chance. Separately, the span
+attribution threshold is calibrated in document-level units and applied to spans, so **79% of
+the author's own paragraphs are classified "rewrite"**. The composite is not yet fit for the
+decision the pipeline makes with it; `stats` output and the demo site should be read with
+that in mind until it is fixed.
+
+### Fixed
+- `eer()` interpolates the ROC crossing instead of taking the best corner, which reported
+  1.0 for an uninformative system whose true EER is 0.5.
+- `build_baselines` no longer emits a degenerate baseline (empty n-gram and tf-idf centroids)
+  for a register whose files have become unreadable; the register is skipped instead.
+
+### Changed
+- `docs/architecture.md` "Voice-match metrics" now points at `docs/metrics.md` and states
+  plainly that the composite is implemented but not yet validated.
+
 ## 0.1.0 (unreleased)
 
 Initial public release.

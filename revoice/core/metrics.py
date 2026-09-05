@@ -52,10 +52,85 @@ def _mean_std(xs: list[float]) -> tuple[float, float]:
     return m, math.sqrt(v)
 
 
-# ---------- baseline building (called from learn) ----------
+# ---------- baseline building ----------
+
+def baseline_from_texts(texts: list[str]) -> dict:
+    """Build one baseline from a list of documents. The unit of aggregation is the
+    DOCUMENT: per-feature mean/std across documents, plus corpus-level centroids.
+
+    Split out of `build_baselines` so callers that have texts but no voice pack —
+    notably `core.bench`, which builds leave-one-out baselines by the hundred — can
+    reuse the exact code path that `learn` uses. Same inputs, same numbers.
+    """
+    fps = [fingerprint(t) for t in texts]
+    if not fps:
+        return {}
+
+    # function words: per-word mean/std across docs
+    fw = {}
+    for w in FUNCTION_WORDS:
+        m, s = _mean_std([fp["function_word_freq"].get(w, 0.0) for fp in fps])
+        fw[w] = [round(m, 6), round(max(s, 1e-6), 6)]
+
+    # scalars
+    scalars = {}
+    for k in SCALARS:
+        m, s = _mean_std([fp.get(k, 0.0) for fp in fps])
+        scalars[k] = [round(m, 4), round(max(s, 1e-6), 4)]
+
+    # sentence-length histogram centroid
+    hists = [fp["sent_len_hist"] for fp in fps if fp.get("sent_len_hist")]
+    n_bins = len(hists[0]) if hists else 0
+    hist_centroid = [round(sum(h[i] for h in hists) / len(hists), 4) for i in range(n_bins)]
+
+    # punctuation centroid
+    punct = {}
+    for p in PUNCTS:
+        m, s = _mean_std([fp["punct_per_sentence"].get(p, 0.0) for fp in fps])
+        punct[p] = [round(m, 4), round(max(s, 1e-6), 4)]
+
+    # tf-idf + n-gram centroids
+    df: Counter = Counter()
+    doc_terms = []
+    char_cent: dict[str, float] = {}
+    bigram_cent: dict[str, float] = {}
+    for text in texts:
+        terms = content_terms(text)
+        doc_terms.append(terms)
+        df.update(terms.keys())
+        for k, v in char_ngram_profile(text).items():
+            char_cent[k] = char_cent.get(k, 0.0) + v
+        for k, v in word_bigram_profile(text).items():
+            bigram_cent[k] = bigram_cent.get(k, 0.0) + v
+    n_texts = max(len(texts), 1)
+    char_cent = dict(sorted(((k, v / n_texts) for k, v in char_cent.items()),
+                            key=lambda kv: -kv[1])[:400])
+    bigram_cent = dict(sorted(((k, v / n_texts) for k, v in bigram_cent.items()),
+                              key=lambda kv: -kv[1])[:300])
+    n_docs = max(len(doc_terms), 1)
+    centroid: dict[str, float] = {}
+    for terms in doc_terms:
+        vec = tfidf_vector(terms, df, n_docs)
+        for k, v in vec.items():
+            centroid[k] = centroid.get(k, 0.0) + v / n_docs
+    top_centroid = dict(sorted(centroid.items(), key=lambda kv: -kv[1])[:400])
+
+    return {
+        "doc_count": len(texts),
+        "function_words": fw,
+        "scalars": scalars,
+        "sent_len_hist": hist_centroid,
+        "punct": punct,
+        "df": dict(df),
+        "n_docs": n_docs,
+        "tfidf_centroid": {k: round(v, 6) for k, v in top_centroid.items()},
+        "char_ngrams": {k: round(v, 6) for k, v in char_cent.items()},
+        "word_bigrams": {k: round(v, 6) for k, v in bigram_cent.items()},
+    }
+
 
 def build_baselines(pack: VoicePack, progress=None) -> dict:
-    """Aggregate per-register baselines from index fingerprints + corpus tf-idf."""
+    """Aggregate per-register baselines over the pack's indexed corpus."""
     index = pack.read_index()
     by_register: dict[str, list[dict]] = {}
     for e in index.values():
@@ -63,78 +138,12 @@ def build_baselines(pack: VoicePack, progress=None) -> dict:
 
     baselines = {}
     for register, entries in by_register.items():
-        fps = [e["fingerprint"] for e in entries if e.get("fingerprint")]
-        if not fps:
+        texts = [t for t in (extract_text(pack.training_dir / e["path"]) for e in entries) if t]
+        if not texts:
             continue
-
-        # function words: per-word mean/std across docs
-        fw = {}
-        for w in FUNCTION_WORDS:
-            m, s = _mean_std([fp["function_word_freq"].get(w, 0.0) for fp in fps])
-            fw[w] = [round(m, 6), round(max(s, 1e-6), 6)]
-
-        # scalars
-        scalars = {}
-        for k in SCALARS:
-            m, s = _mean_std([fp.get(k, 0.0) for fp in fps])
-            scalars[k] = [round(m, 4), round(max(s, 1e-6), 4)]
-
-        # sentence-length histogram centroid
-        hists = [fp["sent_len_hist"] for fp in fps if fp.get("sent_len_hist")]
-        n_bins = len(hists[0]) if hists else 0
-        hist_centroid = [round(sum(h[i] for h in hists) / len(hists), 4) for i in range(n_bins)]
-
-        # punctuation centroid
-        punct = {}
-        for p in PUNCTS:
-            m, s = _mean_std([fp["punct_per_sentence"].get(p, 0.0) for fp in fps])
-            punct[p] = [round(m, 4), round(max(s, 1e-6), 4)]
-
-        # tf-idf + n-gram centroids over the register's docs
-        df: Counter = Counter()
-        doc_terms = []
-        char_cent: dict[str, float] = {}
-        bigram_cent: dict[str, float] = {}
-        n_texts = 0
-        for e in entries:
-            text = extract_text(pack.training_dir / e["path"])
-            if not text:
-                continue
-            n_texts += 1
-            terms = content_terms(text)
-            doc_terms.append(terms)
-            df.update(terms.keys())
-            for k, v in char_ngram_profile(text).items():
-                char_cent[k] = char_cent.get(k, 0.0) + v
-            for k, v in word_bigram_profile(text).items():
-                bigram_cent[k] = bigram_cent.get(k, 0.0) + v
-        n_texts = max(n_texts, 1)
-        char_cent = dict(sorted(((k, v / n_texts) for k, v in char_cent.items()),
-                                key=lambda kv: -kv[1])[:400])
-        bigram_cent = dict(sorted(((k, v / n_texts) for k, v in bigram_cent.items()),
-                                  key=lambda kv: -kv[1])[:300])
-        n_docs = max(len(doc_terms), 1)
-        centroid: dict[str, float] = {}
-        for terms in doc_terms:
-            vec = tfidf_vector(terms, df, n_docs)
-            for k, v in vec.items():
-                centroid[k] = centroid.get(k, 0.0) + v / n_docs
-        top_centroid = dict(sorted(centroid.items(), key=lambda kv: -kv[1])[:400])
-
-        baselines[register] = {
-            "doc_count": len(entries),
-            "function_words": fw,
-            "scalars": scalars,
-            "sent_len_hist": hist_centroid,
-            "punct": punct,
-            "df": dict(df),
-            "n_docs": n_docs,
-            "tfidf_centroid": {k: round(v, 6) for k, v in top_centroid.items()},
-            "char_ngrams": {k: round(v, 6) for k, v in char_cent.items()},
-            "word_bigrams": {k: round(v, 6) for k, v in bigram_cent.items()},
-        }
+        baselines[register] = baseline_from_texts(texts)
         if progress:
-            progress(register, f"baseline from {len(fps)} docs")
+            progress(register, f"baseline from {len(texts)} docs")
 
     (pack.params_dir / "baselines.json").write_text(json.dumps(baselines))
 
