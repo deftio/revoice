@@ -119,18 +119,21 @@ def test_bootstrap_caps_at_max_pairs(learned_pack):
     assert seen == ["pair 1"]  # progress fired on success; inner cap stopped window 2
 
 
-def test_bootstrap_skips_unreadable_and_missing_files(learned_pack):
+def test_bootstrap_skips_unreadable_and_missing_files(tmp_path):
     from revoice.config import ProviderConfig
     from revoice.core.train import bootstrap_examples
+    from revoice.core.voicepack import VoicePack
     from revoice.providers import make_provider
 
-    # unsupported extension -> extract_text returns None -> skipped
-    learned_pack.append_index({"path": "ghost.xyz", "hash": "x", "chars": 1,
-                               "register": "professional", "polish": "polished",
-                               "domains": [], "summary": "", "confidence": 1.0,
-                               "fingerprint": {}, "indexed_at": "now"})
+    # every indexed path is unreadable -> extract_text returns None -> no pairs at all
+    pack = VoicePack.create(tmp_path / "data", "ghosts")
+    for name in ("ghost.xyz", "missing.md"):
+        pack.append_index({"path": name, "hash": "x", "chars": 1,
+                           "register": "professional", "polish": "polished",
+                           "domains": [], "summary": "", "confidence": 1.0,
+                           "fingerprint": {}, "indexed_at": "now"})
     stub = make_provider(ProviderConfig(kind="stub"))
-    assert bootstrap_examples(learned_pack, stub, max_pairs=5) == []
+    assert bootstrap_examples(pack, stub, max_pairs=5) == []
 
 
 def test_write_tooling(learned_pack):
@@ -157,3 +160,29 @@ def test_cli_train_prep(learned_pack, tmp_path, monkeypatch):
     r2 = runner.invoke(app, ["train", "prep", learned_pack.name, "--bootstrap", "0",
                              "--quiet", "-c", str(cfg)])
     assert r2.exit_code == 0 and "flywheel only" in r2.output
+
+
+def test_bootstrap_stops_mid_document_at_max_pairs(tmp_path):
+    """max_pairs is honoured inside a document, not just between documents.
+
+    A long corpus document yields several windows; once the cap is reached the inner
+    loop must stop rather than finish the document and overshoot.
+    """
+    from revoice.config import ProviderConfig
+    from revoice.core.train import _windows, bootstrap_examples
+    from revoice.core.voicepack import VoicePack
+    from revoice.providers import make_provider
+
+    pack = VoicePack.create(tmp_path / "data", "long")
+    para = ("The regulator runs warm under load, and the enclosure does nothing to help. "
+            "Bench results agreed with the model to within a few percent. "
+            "Production tolerances will widen that, so the margin has to absorb it. ") * 3
+    body = "\n\n".join(para for _ in range(6))
+    (pack.training_dir / "long.md").write_text(body)
+    assert len(_windows(body)) >= 3, "fixture must yield several windows"
+    pack.append_index({"path": "long.md", "hash": "h", "chars": len(body),
+                       "register": "professional", "polish": "polished",
+                       "domains": [], "summary": "", "confidence": 1.0,
+                       "fingerprint": {}, "indexed_at": "now"})
+    stub = make_provider(ProviderConfig(kind="stub"))
+    assert len(bootstrap_examples(pack, stub, max_pairs=1)) == 1

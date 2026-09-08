@@ -13,22 +13,27 @@ import pytest
 from typer.testing import CliRunner
 
 from revoice.cli import app
-from revoice.core.bench import (
+from revoice.voicemetric.bench import (
     COMPONENTS,
+    WEIGHTS,
     Doc,
     Trial,
     _window,
     bench,
+    by_register,
     combine,
     content_control,
     corpus_summary,
     default_scorers,
     evaluate,
+    fit_scorer,
     load_corpus,
     parse_name,
     render,
     run_trials,
+    split_trials,
     summarize_lengths,
+    uniform,
     verdict,
 )
 
@@ -121,15 +126,24 @@ def test_no_vocab_scorer_drops_vocab_and_renormalizes():
     assert sum(w.values()) == pytest.approx(1.0)
 
 
-def test_no_vocab_rhythm_shape_drops_all_three():
-    w = default_scorers()["no-vocab-rhythm-shape"]
-    assert w["vocab"] == w["rhythm"] == w["shape"] == 0.0
+def test_content_free_scorer_excludes_the_topical_component():
+    """The content-free ablation is the one docs/metrics.md argues for: no tf-idf."""
+    w = default_scorers()["content-free"]
+    assert w["vocab"] == 0.0
+    assert w["ngram"] == 0.0  # char n-grams pick up topic words too
+    assert w["fwbigram"] > 0 and w["delta"] > 0
     assert sum(w.values()) == pytest.approx(1.0)
+
+
+def test_default_composite_gives_topic_zero_weight():
+    """tf-idf measures subject matter; it must never be inside an authorship score."""
+    assert default_scorers()["composite"]["vocab"] == 0.0
 
 
 def test_combine_is_a_weighted_percentage():
     comps = dict.fromkeys(COMPONENTS, 0.5)
-    assert combine(comps, dict.fromkeys(COMPONENTS, 1 / 6)) == pytest.approx(50.0)
+    even = dict.fromkeys(COMPONENTS, 1 / len(COMPONENTS))
+    assert combine(comps, even) == pytest.approx(50.0)
     assert combine(comps, {"delta": 1.0}) == pytest.approx(50.0)
 
 
@@ -216,9 +230,9 @@ def _synthetic_trials(separation: float, n: int = 30, lengths=(50, 100), jitter:
     out = []
     for length in lengths:
         for i in range(n):
-            out.append(Trial("a", "w", "a", "prose", length, True,
+            out.append(Trial("a", "w", "g", "a", "prose", length, True,
                              dict.fromkeys(COMPONENTS, 0.5 + separation + i * jitter)))
-            out.append(Trial("a", "w", "b", "prose", length, False,
+            out.append(Trial("a", "w", "g", "b", "prose", length, False,
                              dict.fromkeys(COMPONENTS, 0.5 - separation + i * jitter)))
     return out
 
@@ -257,10 +271,10 @@ def test_evaluate_macro_is_not_the_pooled_figure():
     """Length-mixed pooling is the thing macro-averaging exists to avoid."""
     trials = []
     for i in range(20):
-        trials.append(Trial("a", "w", "a", "p", 50, True, dict.fromkeys(COMPONENTS, 0.10 + i * 1e-3)))
-        trials.append(Trial("a", "w", "b", "p", 50, False, dict.fromkeys(COMPONENTS, 0.05 + i * 1e-3)))
-        trials.append(Trial("a", "w", "a", "p", 100, True, dict.fromkeys(COMPONENTS, 0.90 + i * 1e-3)))
-        trials.append(Trial("a", "w", "b", "p", 100, False, dict.fromkeys(COMPONENTS, 0.85 + i * 1e-3)))
+        trials.append(Trial("a", "w", "g", "a", "p", 50, True, dict.fromkeys(COMPONENTS, 0.10 + i * 1e-3)))
+        trials.append(Trial("a", "w", "g", "b", "p", 50, False, dict.fromkeys(COMPONENTS, 0.05 + i * 1e-3)))
+        trials.append(Trial("a", "w", "g", "a", "p", 100, True, dict.fromkeys(COMPONENTS, 0.90 + i * 1e-3)))
+        trials.append(Trial("a", "w", "g", "b", "p", 100, False, dict.fromkeys(COMPONENTS, 0.85 + i * 1e-3)))
     x = evaluate(trials, {"x": {"delta": 1.0}}, (50, 100))["scorers"]["x"]
     assert x["macro"]["auc"] > x["pooled_length_mixed"]["auc"] - 1e-9
     assert x["auc"] == x["macro"]["auc"]
@@ -341,9 +355,9 @@ def test_verdict_flags_non_monotonic_length_behaviour():
     trials = []
     for length, sep in ((50, 0.4), (100, 0.4), (200, 0.0)):
         for i in range(20):
-            trials.append(Trial("a", "w", "a", "p", length, True,
+            trials.append(Trial("a", "w", "g", "a", "p", length, True,
                                 dict.fromkeys(COMPONENTS, 0.5 + sep + i * 1e-4)))
-            trials.append(Trial("a", "w", "b", "p", length, False,
+            trials.append(Trial("a", "w", "g", "b", "p", length, False,
                                 dict.fromkeys(COMPONENTS, 0.5 - sep + i * 1e-4)))
     result = evaluate(trials, {"composite": {"delta": 1.0}}, (50, 100, 200))
     assert "non-monotonic in length" in " ".join(verdict(result))
@@ -446,3 +460,217 @@ def test_cli_bench_reports_a_bad_corpus(tmp_path):
 
 def test_doc_words_property():
     assert Doc("a", "w", "r", "p.md", "one two three").words == 3
+
+
+# ---------- weight fitting ----------
+
+
+def test_fit_scorer_never_gives_topic_any_weight():
+    """`vocab` is excluded from fitting by construction, not by performance.
+
+    It is the strongest single component on every corpus we have, and it is measuring
+    subject matter — an unconstrained fitter grabs it and reports a number that will
+    not survive the author writing about something new.
+    """
+    trials = []
+    for i in range(30):
+        # make vocab a PERFECT separator and everything else noise: a fitter allowed
+        # to see it would hand it all the weight
+        same = dict.fromkeys(COMPONENTS, 0.5)
+        same["vocab"] = 1.0
+        diff = dict.fromkeys(COMPONENTS, 0.5)
+        diff["vocab"] = 0.0
+        trials.append(Trial("a", "w", "g", "a", "p", 50, True, {**same, "delta": 0.9 + i * 1e-4}))
+        trials.append(Trial("a", "w", "g", "b", "p", 50, False, {**diff, "delta": 0.1 + i * 1e-4}))
+    w = fit_scorer(trials, (50,))
+    assert w["vocab"] == 0.0
+    assert w["delta"] > 0.5          # it must use the real signal instead
+    assert sum(w.values()) == pytest.approx(1.0)
+
+
+def test_fit_scorer_falls_back_to_defaults_without_trials():
+    assert fit_scorer([], (50,)) == dict(WEIGHTS)
+
+
+def test_split_trials_separates_by_reference_model():
+    """Fitting and scoring must not share reference models, or we mark our own homework."""
+    trials = [Trial("a", f"w{i}", "g", "a", "p", 50, True, dict.fromkeys(COMPONENTS, 0.5))
+              for i in range(6)]
+    fit, ev = split_trials(trials)
+    fit_keys = {(t.ref_author, t.ref_exclude) for t in fit}
+    ev_keys = {(t.ref_author, t.ref_exclude) for t in ev}
+    assert fit_keys and ev_keys
+    assert not (fit_keys & ev_keys)
+    assert len(fit) + len(ev) == len(trials)
+
+
+def test_bench_fit_reports_weights_and_a_heldout_score(corpus_root):
+    result = bench(corpus_root, (30, 60), 6, 3, skip_content_control=True, fit=True)
+    assert "fitted" in result["scorers"]
+    w = result["fitted_weights"]
+    assert set(w) == set(COMPONENTS)
+    assert w["vocab"] == 0.0
+    assert sum(w.values()) == pytest.approx(1.0, abs=1e-3)
+    assert "auc" in result["fitted_heldout"]
+    assert "FITTED WEIGHTS" in render(result)
+
+
+def test_uniform_weights_over_a_subset():
+    w = uniform(("delta", "punct"))
+    assert w["delta"] == w["punct"] == 0.5
+    assert w["ngram"] == 0.0
+    assert sum(w.values()) == pytest.approx(1.0)
+
+
+# ---------- hard negatives ----------
+
+
+def _two_register_corpus(tmp_path):
+    """Two genres, two authors each, two works each — the shape hard negatives need."""
+    root = tmp_path / "multi"
+    voices = {("a1", "humor"), ("a2", "humor"), ("b1", "science"), ("b2", "science")}
+    for author, register in voices:
+        d = root / author / "training-data"
+        d.mkdir(parents=True)
+        for work in ("one", "two"):
+            for i in range(1, 4):
+                (d / f"{register}-{work}-{i}.md").write_text(
+                    f"The {author} sample about {work} number {i}. " * 40)
+    return root
+
+
+def test_hard_negatives_only_draw_from_the_same_register(tmp_path):
+    docs = load_corpus(_two_register_corpus(tmp_path))
+    reg_of = {d.author: d.register for d in docs}
+    trials = run_trials(docs, (20,), 4, 1, "work", negatives="same-register")
+    assert trials
+    for t in trials:
+        if not t.same:
+            assert reg_of[t.query_author] == reg_of[t.ref_author], \
+                "a different-genre negative slipped into the hard-negative set"
+
+
+def test_default_negatives_include_cross_register_pairs(tmp_path):
+    docs = load_corpus(_two_register_corpus(tmp_path))
+    reg_of = {d.author: d.register for d in docs}
+    trials = run_trials(docs, (20,), 4, 1, "work", negatives="any")
+    cross = [t for t in trials if not t.same and reg_of[t.query_author] != reg_of[t.ref_author]]
+    assert cross, "the default mode should mix in the easy cross-genre pairs"
+
+
+def test_hard_negatives_skip_authors_with_no_same_register_rival(tmp_path):
+    root = _two_register_corpus(tmp_path)
+    lone = root / "solo" / "training-data"
+    lone.mkdir(parents=True)
+    for work in ("one", "two"):
+        for i in range(1, 4):
+            (lone / f"poetry-{work}-{i}.md").write_text(f"A solo line about {work} {i}. " * 40)
+    trials = run_trials(load_corpus(root), (20,), 4, 1, "work", negatives="same-register")
+    assert "solo" not in {t.ref_author for t in trials}
+
+
+def test_bench_records_the_negatives_mode(tmp_path):
+    result = bench(_two_register_corpus(tmp_path), (20,), 4, 1,
+                   skip_content_control=True, negatives="same-register")
+    assert result["protocol"]["negatives"] == "same-register"
+    assert "same-register negatives" in render(result)
+
+
+def test_bench_reports_when_no_trials_can_be_built(tmp_path):
+    root = tmp_path / "lonely"
+    for author in ("x", "y"):
+        d = root / author / "training-data"
+        d.mkdir(parents=True)
+        (d / f"{author}-only-1.md").write_text("one two three four five. " * 40)
+    with pytest.raises(RuntimeError, match="no trials"):
+        bench(root, (20,), 4, 1, skip_content_control=True)
+
+
+def test_cli_hard_negatives_flag(corpus_root):
+    r = runner.invoke(app, ["bench", str(corpus_root), "--lengths", "30", "-n", "3",
+                            "--no-content-control", "--hard-negatives", "--json"])
+    assert r.exit_code == 0, r.output
+    assert json.loads(r.output)["protocol"]["negatives"] == "same-register"
+
+
+# ---------- per-genre breakdown ----------
+
+
+def test_by_register_groups_by_the_reference_authors_genre(tmp_path):
+    """Authorship is not equally hard in every genre; one aggregate hides that."""
+    docs = load_corpus(_two_register_corpus(tmp_path))
+    trials = run_trials(docs, (20,), 4, 1, "work", negatives="same-register")
+    br = by_register(trials)
+    assert set(br) == {"humor", "science"}
+    for _reg, v in br.items():
+        assert v["authors"] == 2
+        assert v["n_same"] > 0 and v["n_different"] > 0
+
+
+def test_by_register_accepts_a_custom_weighting(tmp_path):
+    docs = load_corpus(_two_register_corpus(tmp_path))
+    trials = run_trials(docs, (20,), 4, 1, "work")
+    assert set(by_register(trials, {"delta": 1.0})) == {"humor", "science"}
+
+
+def test_by_register_empty_trials():
+    assert by_register([]) == {}
+
+
+def test_render_shows_the_genre_table_only_when_there_is_more_than_one(tmp_path):
+    multi = bench(_two_register_corpus(tmp_path), (20,), 4, 1, skip_content_control=True)
+    assert "BY GENRE" in render(multi)
+
+
+def test_render_omits_the_genre_table_for_a_single_genre(corpus_root):
+    single = bench(corpus_root, (30,), 4, 3, skip_content_control=True)
+    assert len(single["by_register"]) == 1
+    assert "BY GENRE" not in render(single)
+
+
+# ---------- the default text reader ----------
+
+
+def test_read_text_file_rejects_binary_by_content_not_extension(tmp_path):
+    """Sniffing content is the right amount of knowledge for the measurement layer:
+    it keeps a stray image out of a corpus without learning what a .docx is."""
+    from revoice.voicemetric.bench import read_text_file
+
+    (tmp_path / "png-magic.md").write_bytes(b"\x89PNG\r\n\x1a\n")          # wrong ext, binary
+    (tmp_path / "nul.md").write_bytes(b"text\x00more text" + b"x" * 200)   # NUL byte
+    (tmp_path / "plain.bin").write_text("ordinary prose, wrong extension.")  # right the other way
+    assert read_text_file(tmp_path / "png-magic.md") is None
+    assert read_text_file(tmp_path / "nul.md") is None
+    assert read_text_file(tmp_path / "plain.bin") == "ordinary prose, wrong extension."
+
+
+def test_read_text_file_tolerates_a_stray_bad_byte_in_a_long_document(tmp_path):
+    f = tmp_path / "mostly-fine.md"
+    f.write_bytes(("good text " * 5000).encode() + b"\xff\xfe")
+    assert read_text_file_result_is_text(f)
+
+
+def read_text_file_result_is_text(path):
+    from revoice.voicemetric.bench import read_text_file
+
+    out = read_text_file(path)
+    return isinstance(out, str) and len(out) > 100
+
+
+def test_read_text_file_on_a_missing_path(tmp_path):
+    from revoice.voicemetric.bench import read_text_file
+
+    assert read_text_file(tmp_path / "not-here.md") is None
+    assert read_text_file(tmp_path) is None          # a directory is not readable text
+
+
+def test_load_corpus_accepts_an_injected_reader(tmp_path):
+    """The measurement layer never learns document formats; the caller supplies them."""
+    from revoice.voicemetric.bench import load_corpus
+
+    d = tmp_path / "a" / "training-data"
+    d.mkdir(parents=True)
+    (d / "prose-w-1.md").write_bytes(b"\x00binary")
+    assert load_corpus(tmp_path) == []
+    docs = load_corpus(tmp_path, read=lambda p: "decoded by the caller's own reader")
+    assert len(docs) == 1 and docs[0].text.startswith("decoded")

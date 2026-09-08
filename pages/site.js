@@ -1,7 +1,24 @@
-/* Shared site chrome for revoice pages — bitwrench TACO components.
-   Every page: bw.loadStyles(THEME); bw.mount('#app', sitePage(active, [...])); */
+/* Shared site chrome for revoice pages.
+ *
+ * bitwrench owns the DOM, the palette, and the components. Pages do:
+ *     bw.mount('#app', sitePage('demo.html', [ ...tacos... ]));
+ * and never call loadStyles themselves — theming happens here, once.
+ *
+ * Rule of thumb followed throughout (bitwrench's own "common mistakes" list):
+ *   - never hand-build a component that BCCL already ships (bw.makeCard,
+ *     bw.makeTable, bw.makeAlert, bw.makeProgress, ...)
+ *   - never hard-code a colour; derive it from STYLES.palette so the whole site
+ *     re-themes from the two seeds below and dark mode works for free
+ *   - never hand-write @media; use bw.responsive()
+ */
 
 var THEME = { primary: '#4a6fa5', secondary: '#3d8b52' };
+
+/* One call: generates the full palette (hover/active/focus/border/textOn for
+   every colour) plus structural CSS for all 47 BCCL components. */
+var STYLES = bw.loadStyles(THEME);
+var P = STYLES.palette;      // primary, secondary, success, danger, warning, info, light, dark, surface, surfaceAlt, background
+var L = STYLES.layout;       // spacing, radius, typeScale, elevation, motion
 
 /* ---- analytics: GoatCounter — unsampled, no cookies, no consent banner.
    Change the site code when the account exists; localhost hits are ignored. */
@@ -17,7 +34,7 @@ var GOATCOUNTER_CODE = 'deftio';
 /* ---- favicon: the r< mark (placeholder until the real icon lands) ---- */
 (function () {
   var svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>" +
-    "<rect width='64' height='64' rx='12' fill='%234a6fa5'/>" +
+    "<rect width='64' height='64' rx='12' fill='" + encodeURIComponent(P.primary.base) + "'/>" +
     "<text x='32' y='44' font-family='Menlo,Consolas,monospace' font-size='34' " +
     "font-weight='bold' fill='white' text-anchor='middle'>r&lt;</text></svg>";
   var l = document.createElement('link');
@@ -26,65 +43,78 @@ var GOATCOUNTER_CODE = 'deftio';
   document.head.appendChild(l);
 })();
 
-/* ---- site styles: clean lines, one place, bitwrench-idiomatic ---- */
+/* ---- site chrome only: things BCCL does not ship (topbar, brand mark, prose
+   rhythm). Every value comes from the palette or the layout tokens. ---- */
 bw.injectCSS(bw.css({
   'html': { fontSize: '16px' },
-  'body': { background: '#fbfbfa', color: '#23262b', lineHeight: '1.55' },
-  '.rv_topbar': { position: 'sticky', top: '0', zIndex: '50', background: '#fffffffa',
-                  borderBottom: '1px solid #e3e4e2', backdropFilter: 'blur(4px)' },
+  'body': { background: P.background, color: P.dark.base, lineHeight: '1.55' },
+
+  '.rv_topbar': { position: 'sticky', top: '0', zIndex: '50', background: P.surface,
+                  borderBottom: '1px solid ' + P.light.border },
   '.rv_topbar_inner': { maxWidth: '1280px', margin: '0 auto', padding: '0.55em 3rem',
-                        display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '0.2em 1.1em' },
-  '.rv_mark': { display: 'inline-block', background: '#4a6fa5', color: '#fff',
+                        display: 'flex', alignItems: 'center', flexWrap: 'wrap',
+                        gap: '0.2em 1.1em' },
+  '.rv_mark': { display: 'inline-block', background: P.primary.base, color: P.primary.textOn,
                 fontFamily: 'Menlo,Consolas,monospace', fontWeight: '700', fontSize: '1.05em',
-                borderRadius: '7px', padding: '0.12em 0.42em', letterSpacing: '-0.03em' },
+                borderRadius: L.radius.btn, padding: '0.12em 0.42em', letterSpacing: '-0.03em' },
   '.rv_brand': { display: 'inline-flex', alignItems: 'center', gap: '0.5em',
                  textDecoration: 'none', color: 'inherit' },
   '.rv_brand b': { fontSize: '1.18em', fontWeight: '700', letterSpacing: '0.01em' },
   '.rv_nav': { display: 'flex', flexWrap: 'wrap', gap: '0 1.15em', marginLeft: 'auto' },
-  '.rv_nav a': { textDecoration: 'none', color: '#4b5260', fontSize: '0.95em',
-                 padding: '0.5em 0.1em', borderBottom: '2px solid transparent' },
-  '.rv_nav a:hover': { color: '#4a6fa5' },
-  '.rv_nav a.rv_active': { color: '#4a6fa5', borderBottomColor: '#4a6fa5', fontWeight: '600' },
-  /* bitwrench-site geometry: 1280px wide cap, 3rem gutters (1rem on small screens) */
+  '.rv_nav a': { textDecoration: 'none', color: P.light.darkText, fontSize: '0.95em',
+                 padding: '0.5em 0.1em', borderBottom: '2px solid transparent',
+                 transition: 'color ' + L.motion.fast + ' ' + L.motion.easing },
+  '.rv_nav a:hover': { color: P.primary.base },
+  '.rv_nav a.rv_active': { color: P.primary.base, borderBottomColor: P.primary.base,
+                           fontWeight: '600' },
+
   '.rv_wrap': { maxWidth: '1280px', margin: '0 auto', padding: '0 3rem' },
-  '@media (max-width: 768px)': {
-    '.rv_wrap': { padding: '0 1rem' },
-    '.rv_topbar_inner': { padding: '0.55em 1rem' }
-  },
   '.rv_hero': { padding: '1.3em 0 0 0' },
-  'h1': { fontSize: '1.7em', letterSpacing: '-0.01em', margin: '0.5em 0 0.25em 0', fontWeight: '650' },
+
+  'h1': { fontSize: '1.7em', letterSpacing: '-0.01em', margin: '0.5em 0 0.25em 0',
+          fontWeight: '650' },
   'h2': { margin: '2.3em 0 0.55em 0', paddingBottom: '0.25em',
-          borderBottom: '1px solid #e6e7e5', fontSize: '1.12em', fontWeight: '650',
-          color: '#39414d' },
+          borderBottom: '1px solid ' + P.light.border, fontSize: '1.12em',
+          fontWeight: '650', color: P.dark.base },
   'h3': { margin: '1em 0 0.35em 0', fontSize: '1.02em' },
   'p': { margin: '0.55em 0' },
   'ul': { margin: '0.5em 0', paddingLeft: '1.4em' },
   'li': { margin: '0.3em 0' },
   'section': { marginBottom: '0.4em' },
-  'pre.bw_card': { background: '#22262c', color: '#e8eaed', border: 'none',
-                   borderLeft: '4px solid #4a6fa5', borderRadius: '8px',
-                   padding: '0.8em 1em', margin: '0.7em 0', overflowX: 'auto',
-                   fontSize: '0.86em', lineHeight: '1.5' },
-  '.bw_row': { margin: '0.6em 0' },
-  '.bw_card': { border: '1px solid #e3e4e2', borderRadius: '10px', background: '#fff' },
-  '.bw_row .bw_card': { transition: 'box-shadow 0.15s, transform 0.15s', height: '100%' },
-  '.bw_row .bw_card:hover': { boxShadow: '0 3px 14px #0000000f', transform: 'translateY(-1px)' },
-  '.bw_table th': { borderBottom: '2px solid #4a6fa5', textAlign: 'left' },
-  '.bw_table td': { borderBottom: '1px solid #ececea' },
-  '.bw_table tr:hover td': { background: '#f4f6f9' },
-  'footer.rv_footer': { borderTop: '1px solid #e6e7e5', marginTop: '2em',
-                        padding: '1em 0 1.6em 0', opacity: '0.75', fontSize: '0.88em' },
-  /* buttons: explicit treatment (theme's bare .bw_btn is minimal) */
-  'button.bw_btn, a.bw_btn': { display: 'inline-block', font: 'inherit', fontSize: '0.93em',
-    padding: '0.42em 1em', margin: '0 0.35em 0.35em 0', cursor: 'pointer',
-    background: '#fff', color: '#3c4350', border: '1px solid #d5d7db', borderRadius: '8px',
-    textDecoration: 'none', transition: 'border-color 0.12s, color 0.12s, background 0.12s' },
-  'button.bw_btn:hover, a.bw_btn:hover': { borderColor: '#4a6fa5', color: '#4a6fa5' },
-  '.bw_btn.bw_primary': { background: '#4a6fa5', color: '#fff', border: '1px solid #4a6fa5' },
-  '.bw_btn.bw_primary:hover': { background: '#3d5d8c', color: '#fff' },
-  '.rv_chip': { fontSize: '0.85em', padding: '0.28em 0.85em', borderRadius: '1em',
-                background: '#f2f4f7' },
-  '.rv_chip:hover': { background: '#e8edf4' }
+
+  '.rv_code': { background: P.dark.base, color: P.light.base, border: 'none',
+                borderLeft: '4px solid ' + P.primary.base, borderRadius: L.radius.card,
+                padding: '0.8em 1em', margin: '0.7em 0', overflowX: 'auto',
+                fontSize: '0.86em', lineHeight: '1.5' },
+
+  /* light touch on BCCL's own components — extend, never re-implement */
+  '.bw_bccl_card': { height: '100%' },
+  '.rv_cards .bw_bccl_card': { transition: 'box-shadow ' + L.motion.normal + ', transform ' + L.motion.normal },
+  '.rv_cards .bw_bccl_card:hover': { boxShadow: L.elevation.md, transform: 'translateY(-1px)' },
+  '.bw_bccl_table': { width: '100%' },
+  '.rv_scroll': { overflowX: 'auto' },
+
+  'footer.rv_footer': { borderTop: '1px solid ' + P.light.border, marginTop: '2em',
+                        padding: '1em 0 1.6em 0', opacity: '0.75', fontSize: '0.88em' }
+}));
+
+/* responsive rules belong to bw.responsive(), not hand-written @media */
+bw.injectCSS(bw.responsive('.rv_wrap', {
+  base: { padding: '0 1rem' },
+  md: { padding: '0 3rem' }
+}));
+bw.injectCSS(bw.responsive('.rv_topbar_inner', {
+  base: { padding: '0.55em 1rem' },
+  md: { padding: '0.55em 3rem' }
+}));
+/* one grid definition every page reuses: stacks on phones, columns on desktop */
+bw.injectCSS(bw.responsive('.rv_cards', {
+  base: { display: 'grid', gap: '0.9em', gridTemplateColumns: '1fr' },
+  md: { gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }
+}));
+bw.injectCSS(bw.responsive('.rv_split', {
+  base: { display: 'grid', gap: '0.9em', gridTemplateColumns: '1fr' },
+  md: { gridTemplateColumns: '1fr 1fr' }
 }));
 
 var NAV = [
@@ -123,18 +153,21 @@ function siteFooter() {
 }
 
 function codeBlock(s) {
-  return { t: 'pre', a: { class: 'bw_card' }, c: { t: 'code', c: s } };
+  return { t: 'pre', a: { class: 'rv_code' }, c: { t: 'code', c: s } };
 }
 
 function section(title, kids) {
   return { t: 'section', c: [{ t: 'h2', c: title }].concat(kids) };
 }
 
+/* cards in a responsive grid — bw.makeCard does the card, .rv_cards does the grid */
 function cardRow(cards) {
-  return { t: 'div', a: { class: 'bw_row' },
-    c: cards.map(function (c) {
-      return { t: 'div', a: { class: 'bw_col' }, c: bw.makeCard(c) };
-    }) };
+  return { t: 'div', a: { class: 'rv_cards' }, c: cards.map(bw.makeCard) };
+}
+
+/* a table that scrolls rather than squashing on a phone */
+function scrollTable(props) {
+  return { t: 'div', a: { class: 'rv_scroll' }, c: bw.makeTable(props) };
 }
 
 function sitePage(active, contentKids) {

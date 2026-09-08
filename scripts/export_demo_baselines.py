@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from revoice.core.stylometry import (  # noqa: E402
+from revoice.voicemetric.features import (  # noqa: E402
     FUNCTION_WORDS,
     char_ngram_profile,
     fingerprint,
@@ -53,6 +53,35 @@ def _windows(text: str, target: int = 1200) -> list[str]:
     return [w for w in out if len(w) > 300]
 
 
+def _aggregate(texts: list[str]) -> dict:
+    """Baseline from a list of windows. Pure aggregation, so leave-one-out
+    calibration can rebuild it without duplicating the logic."""
+    fps = [fingerprint(t) for t in texts]
+    fw = {}
+    for w in FUNCTION_WORDS:
+        m, s = _mean_std([fp["function_word_freq"].get(w, 0.0) for fp in fps])
+        fw[w] = [round(m, 5), round(max(s, 1e-6), 5)]
+    n = len(fps)
+    hist = [round(sum(fp["sent_len_hist"][i] for fp in fps) / n, 4)
+            for i in range(len(fps[0]["sent_len_hist"]))]
+    punct = {}
+    for p in ",;:—–()!?\"'":
+        m, s = _mean_std([fp["punct_per_sentence"].get(p, 0.0) for fp in fps])
+        punct[p] = [round(m, 4), round(max(s, 1e-6), 4)]
+    cent: Counter = Counter()
+    for t in texts:
+        for k, v in char_ngram_profile(t).items():
+            cent[k] += v / len(texts)
+    ngrams = {k: round(v, 6) for k, v in cent.most_common(TOP_NGRAMS)}
+    bcent: Counter = Counter()
+    for t in texts:
+        for k, v in word_bigram_profile(t).items():
+            bcent[k] += v / len(texts)
+    bigrams = {k: round(v, 6) for k, v in bcent.most_common(TOP_NGRAMS)}
+    return {"doc_count": n, "function_words": fw, "sent_len_hist": hist,
+            "punct": punct, "char_ngrams": ngrams, "word_bigrams": bigrams}
+
+
 def build(voice_dir: Path) -> dict:
     groups: dict[str, list[str]] = {}
     for f in sorted((voice_dir / "training-data").glob("*.md")):
@@ -61,44 +90,32 @@ def build(voice_dir: Path) -> dict:
         if reg:
             groups.setdefault(reg, []).extend(_windows(f.read_text()))
 
-    registers = {}
-    for reg, texts in groups.items():
-        fps = [fingerprint(t) for t in texts]
-        fw = {}
-        for w in FUNCTION_WORDS:
-            m, s = _mean_std([fp["function_word_freq"].get(w, 0.0) for fp in fps])
-            fw[w] = [round(m, 5), round(max(s, 1e-6), 5)]
-        n = len(fps)
-        hist = [round(sum(fp["sent_len_hist"][i] for fp in fps) / n, 4)
-                for i in range(len(fps[0]["sent_len_hist"]))]
-        punct = {}
-        for p in ",;:—–()!?\"'":
-            m, s = _mean_std([fp["punct_per_sentence"].get(p, 0.0) for fp in fps])
-            punct[p] = [round(m, 4), round(max(s, 1e-6), 4)]
-        cent: Counter = Counter()
-        for t in texts:
-            for k, v in char_ngram_profile(t).items():
-                cent[k] += v / len(texts)
-        ngrams = {k: round(v, 6) for k, v in cent.most_common(TOP_NGRAMS)}
-        bcent: Counter = Counter()
-        for t in texts:
-            for k, v in word_bigram_profile(t).items():
-                bcent[k] += v / len(texts)
-        bigrams = {k: round(v, 6) for k, v in bcent.most_common(TOP_NGRAMS)}
-        registers[reg] = {"doc_count": n, "function_words": fw, "sent_len_hist": hist,
-                          "punct": punct, "char_ngrams": ngrams, "word_bigrams": bigrams}
+    registers = {reg: _aggregate(texts) for reg, texts in groups.items()}
 
-    # self-calibration with the DEMO formula (mirrors docs/demo.html scoring exactly):
+    # Self-calibration, LEAVE-ONE-OUT (mirrors buildBaseline() in pages/stylometry.js).
+    # Scoring a window against a baseline it helped build is contaminated: the window
+    # pulls the mean toward itself, so the band lands too high and too tight, and every
+    # candidate then scores lower than it should against it.
     for reg, texts in groups.items():
-        base = registers[reg]
-        selfs = [_demo_score(t, base) for t in texts]
+        selfs = []
+        for i, t in enumerate(texts):
+            rest = texts[:i] + texts[i + 1:]
+            if len(rest) < 2:
+                continue
+            selfs.append(_demo_score(t, _aggregate(rest)))
+        if not selfs:  # too few windows to hold one out
+            selfs = [_demo_score(t, registers[reg]) for t in texts]
         m, s = _mean_std(selfs)
-        base["self"] = [round(m, 1), round(max(s, 1.0), 1)]
+        registers[reg]["self"] = [round(m, 1), round(max(s, 1.0), 1)]
     return registers
 
 
 def _demo_score(text: str, base: dict) -> float:
-    """Python mirror of the JS score() in docs/demo.html — keep in sync."""
+    """Python mirror of the JS score() in pages/stylometry.js — keep the weights in sync.
+
+    Weights come from `revoice bench` (topic-controlled): 0.2/0.6/0.1/0.1 scores
+    macro AUC 0.687 vs 0.641 for the previous even split.
+    """
     fp = fingerprint(text)
     ng = char_ngram_profile(text, top=300)
     zs = []
@@ -120,7 +137,7 @@ def _demo_score(text: str, base: dict) -> float:
     for p, (m, s) in base["punct"].items():
         ps.append(math.exp(-abs(fp["punct_per_sentence"].get(p, 0.0) - m) / max(s, 0.05)))
     punct = sum(ps) / len(ps)
-    return 100 * (0.3 * delta_sim + 0.3 * ngram + 0.2 * rhythm + 0.2 * punct)
+    return 100 * (0.2 * delta_sim + 0.6 * ngram + 0.1 * rhythm + 0.1 * punct)
 
 
 def main():

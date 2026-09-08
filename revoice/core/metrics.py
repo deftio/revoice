@@ -1,238 +1,111 @@
-"""Voice-match metrics: how close is a document to a voice register's baseline?
+"""Voice-pack-aware wrappers around `revoice.voicemetric`.
 
-Baselines are built during `learn` from corpus fingerprints (params/baselines.json).
-All metrics are deterministic descriptive statistics:
+The measurement itself lives in `revoice/voicemetric/`, which knows nothing about voice
+packs, file formats or where anything is stored. This file is the seam: it reads a
+pack's corpus, hands texts to the measurement code, and writes the results back into
+`params/`. Same division of labour as `revoice/rubric/` and `core/rubrics.py`.
 
-  delta     Burrows' Delta on function-word z-scores (authorship-attribution standard;
-            effectively a standardized linear discriminator). Lower = closer.
-  rhythm    L1 similarity between sentence-length histograms.
-  vocab     tf-idf cosine similarity vs the register's corpus centroid.
-  punct     similarity of per-sentence punctuation rates.
-  shape     similarity on scalar features (word len, TTR, adverbs, nominalizations,
-            passive rate, flesch) via z-scores.
-
-Composite: weighted blend → 0-100 "voice match" with per-component breakdown.
-Calibration is relative: compare a doc's score to `learn`-reported self-scores
-(the corpus scored against its own baseline) rather than treating numbers as absolute.
+Everything the rest of revoice imported from here still resolves, so callers need not
+care which side of the seam a name lives on.
 """
 
 from __future__ import annotations
 
 import json
-import math
-from collections import Counter
+from datetime import datetime, timezone
 
+import revoice.voicemetric as voicemetric
 from revoice.core.ingest import extract_text
-from revoice.core.stylometry import (
-    FUNCTION_WORDS,
-    char_ngram_profile,
-    content_terms,
-    cosine,
-    fingerprint,
-    tfidf_vector,
-    word_bigram_profile,
-)
 from revoice.core.voicepack import VoicePack
 
-SCALARS = [
-    "mean_sentence_len", "sentence_len_std", "burstiness", "mean_word_len",
-    "type_token_ratio", "hapax_ratio", "adverb_ly_rate", "nominalization_rate",
-    "passive_rate", "flesch",
-]
-PUNCTS = list(",;:—–()!?\"'*")
-WEIGHTS = {"delta": 0.25, "ngram": 0.25, "rhythm": 0.15, "vocab": 0.10, "punct": 0.10, "shape": 0.15}
-MIN_WORDS_RELIABLE = 150
+# re-exported so the rest of revoice keeps one import site for measurement
+from revoice.voicemetric.baseline import (  # noqa: F401
+    COMPONENTS,
+    LOO_MAX_DOCS,
+    MIN_WORDS_RELIABLE,
+    PUNCT_RATIO_SCALARS,
+    PUNCTS,
+    RICHNESS_SCALARS,
+    SCALARS,
+    SPAN_BUCKETS,
+    SPAN_SAMPLES_PER_BUCKET,
+    STRUCTURE_SCALARS,
+    SYNTAX_SCALARS,
+    VOICE_COMPONENTS,
+    WEIGHTS,
+    _bucket_for,
+    _mean_std,
+    baseline_from_texts,
+    calibration_from_texts,
+    score_text,
+    span_floor,
+)
 
 
-def _mean_std(xs: list[float]) -> tuple[float, float]:
-    if not xs:
-        return 0.0, 0.0
-    m = sum(xs) / len(xs)
-    v = sum((x - m) ** 2 for x in xs) / len(xs)
-    return m, math.sqrt(v)
-
-
-# ---------- baseline building ----------
-
-def baseline_from_texts(texts: list[str]) -> dict:
-    """Build one baseline from a list of documents. The unit of aggregation is the
-    DOCUMENT: per-feature mean/std across documents, plus corpus-level centroids.
-
-    Split out of `build_baselines` so callers that have texts but no voice pack —
-    notably `core.bench`, which builds leave-one-out baselines by the hundred — can
-    reuse the exact code path that `learn` uses. Same inputs, same numbers.
-    """
-    fps = [fingerprint(t) for t in texts]
-    if not fps:
-        return {}
-
-    # function words: per-word mean/std across docs
-    fw = {}
-    for w in FUNCTION_WORDS:
-        m, s = _mean_std([fp["function_word_freq"].get(w, 0.0) for fp in fps])
-        fw[w] = [round(m, 6), round(max(s, 1e-6), 6)]
-
-    # scalars
-    scalars = {}
-    for k in SCALARS:
-        m, s = _mean_std([fp.get(k, 0.0) for fp in fps])
-        scalars[k] = [round(m, 4), round(max(s, 1e-6), 4)]
-
-    # sentence-length histogram centroid
-    hists = [fp["sent_len_hist"] for fp in fps if fp.get("sent_len_hist")]
-    n_bins = len(hists[0]) if hists else 0
-    hist_centroid = [round(sum(h[i] for h in hists) / len(hists), 4) for i in range(n_bins)]
-
-    # punctuation centroid
-    punct = {}
-    for p in PUNCTS:
-        m, s = _mean_std([fp["punct_per_sentence"].get(p, 0.0) for fp in fps])
-        punct[p] = [round(m, 4), round(max(s, 1e-6), 4)]
-
-    # tf-idf + n-gram centroids
-    df: Counter = Counter()
-    doc_terms = []
-    char_cent: dict[str, float] = {}
-    bigram_cent: dict[str, float] = {}
-    for text in texts:
-        terms = content_terms(text)
-        doc_terms.append(terms)
-        df.update(terms.keys())
-        for k, v in char_ngram_profile(text).items():
-            char_cent[k] = char_cent.get(k, 0.0) + v
-        for k, v in word_bigram_profile(text).items():
-            bigram_cent[k] = bigram_cent.get(k, 0.0) + v
-    n_texts = max(len(texts), 1)
-    char_cent = dict(sorted(((k, v / n_texts) for k, v in char_cent.items()),
-                            key=lambda kv: -kv[1])[:400])
-    bigram_cent = dict(sorted(((k, v / n_texts) for k, v in bigram_cent.items()),
-                              key=lambda kv: -kv[1])[:300])
-    n_docs = max(len(doc_terms), 1)
-    centroid: dict[str, float] = {}
-    for terms in doc_terms:
-        vec = tfidf_vector(terms, df, n_docs)
-        for k, v in vec.items():
-            centroid[k] = centroid.get(k, 0.0) + v / n_docs
-    top_centroid = dict(sorted(centroid.items(), key=lambda kv: -kv[1])[:400])
-
-    return {
-        "doc_count": len(texts),
-        "function_words": fw,
-        "scalars": scalars,
-        "sent_len_hist": hist_centroid,
-        "punct": punct,
-        "df": dict(df),
-        "n_docs": n_docs,
-        "tfidf_centroid": {k: round(v, 6) for k, v in top_centroid.items()},
-        "char_ngrams": {k: round(v, 6) for k, v in char_cent.items()},
-        "word_bigrams": {k: round(v, 6) for k, v in bigram_cent.items()},
-    }
+def _texts_by_register(pack: VoicePack) -> dict[str, list[str]]:
+    """Read the pack's corpus once, grouped by register. Unreadable entries are skipped:
+    the index is a cache keyed by path, so a deleted document is a normal occurrence."""
+    out: dict[str, list[str]] = {}
+    for e in pack.read_index().values():
+        text = extract_text(pack.training_dir / e["path"])
+        if text:
+            out.setdefault(e["register"], []).append(text)
+    return out
 
 
 def build_baselines(pack: VoicePack, progress=None) -> dict:
-    """Aggregate per-register baselines over the pack's indexed corpus."""
-    index = pack.read_index()
-    by_register: dict[str, list[dict]] = {}
-    for e in index.values():
-        by_register.setdefault(e["register"], []).append(e)
+    """Aggregate per-register baselines over the pack's indexed corpus, and calibrate."""
+    by_register = _texts_by_register(pack)
 
     baselines = {}
-    for register, entries in by_register.items():
-        texts = [t for t in (extract_text(pack.training_dir / e["path"]) for e in entries) if t]
-        if not texts:
-            continue
+    for register, texts in by_register.items():
         baselines[register] = baseline_from_texts(texts)
         if progress:
             progress(register, f"baseline from {len(texts)} docs")
 
-    (pack.params_dir / "baselines.json").write_text(json.dumps(baselines))
-
-    # self-calibration: score each corpus doc against its own register baseline
-    calib = {}
-    for register, entries in by_register.items():
-        scores = []
-        for e in entries:
-            text = extract_text(pack.training_dir / e["path"])
-            if text:
-                r = score_text(text, baselines[register])
-                scores.append(r["composite"])
-        if scores:
-            m, s = _mean_std(scores)
-            calib[register] = {"self_mean": round(m, 1), "self_std": round(s, 1),
-                               "self_min": round(min(scores), 1)}
-    (pack.params_dir / "calibration.json").write_text(json.dumps(calib, indent=2))
+    # Stamp the engine into both artefacts. A baseline outlives the code that made it,
+    # and refitting the composite weights silently changes every score computed against
+    # an old one — `signature` is what turns that from a mystery into a diff.
+    stamp = {"_engine": {**voicemetric.describe(),
+                         "built": datetime.now(timezone.utc).isoformat(timespec="seconds")}}
+    (pack.params_dir / "baselines.json").write_text(json.dumps({**stamp, **baselines}))
+    calib = calibration_from_texts(baselines, by_register, progress)
+    (pack.params_dir / "calibration.json").write_text(json.dumps({**stamp, **calib}, indent=2))
+    pack.update_manifest(voicemetric=voicemetric.describe())
     return baselines
 
 
+def _load_stamped(path) -> dict:
+    """Read a stamped artefact, returning only its registers.
+
+    `_engine` sits alongside the register keys rather than nesting the data a level
+    deeper, so every existing reader keeps working; it is stripped here so no caller
+    mistakes it for a register named "_engine".
+    """
+    if not path.is_file():
+        return {}
+    data = json.loads(path.read_text())
+    return {k: v for k, v in data.items() if not k.startswith("_")}
+
+
 def load_baselines(pack: VoicePack) -> dict:
-    p = pack.params_dir / "baselines.json"
-    return json.loads(p.read_text()) if p.is_file() else {}
+    return _load_stamped(pack.params_dir / "baselines.json")
 
 
 def load_calibration(pack: VoicePack) -> dict:
-    p = pack.params_dir / "calibration.json"
-    return json.loads(p.read_text()) if p.is_file() else {}
+    return _load_stamped(pack.params_dir / "calibration.json")
 
 
-# ---------- scoring ----------
-
-def score_text(text: str, baseline: dict) -> dict:
-    """Score one text against one register baseline. Returns components + composite 0-100."""
-    fp = fingerprint(text)
-
-    # Burrows' Delta (variance floor prevents blow-ups on small/homogeneous corpora:
-    # std is floored at 15% of the mean + a small absolute term)
-    zs = []
-    for w, (m, s) in baseline["function_words"].items():
-        f = fp["function_word_freq"].get(w, 0.0)
-        floor = max(s, 0.15 * m + 5e-4)
-        zs.append(abs(f - m) / floor)
-    delta = sum(zs) / len(zs) if zs else 99.0
-    delta_sim = math.exp(-delta / 1.5)  # 0..1, ~0.5 at delta≈1
-
-    # n-grams: char 3-gram + word bigram cosine vs register centroids (avg)
-    cn = cosine(char_ngram_profile(text), baseline.get("char_ngrams", {}))
-    wb = cosine(word_bigram_profile(text), baseline.get("word_bigrams", {}))
-    ngram = 0.6 * cn + 0.4 * wb
-
-    # rhythm: L1 histogram similarity
-    bh = baseline.get("sent_len_hist") or []
-    dh = fp["sent_len_hist"]
-    rhythm = 1 - sum(abs(a - b) for a, b in zip(dh, bh, strict=False)) / 2 if bh else 0.0
-
-    # vocab: tf-idf cosine vs centroid
-    vec = tfidf_vector(content_terms(text), baseline.get("df", {}), baseline.get("n_docs", 1))
-    vocab = cosine(vec, baseline.get("tfidf_centroid", {}))
-
-    # punctuation: mean per-mark z-similarity
-    psims = []
-    for p, (m, s) in baseline.get("punct", {}).items():
-        f = fp["punct_per_sentence"].get(p, 0.0)
-        psims.append(math.exp(-abs(f - m) / max(s, 0.05)))
-    punct = sum(psims) / len(psims) if psims else 0.0
-
-    # shape: scalar z-similarity
-    ssims = []
-    for k, (m, s) in baseline.get("scalars", {}).items():
-        f = fp.get(k, 0.0)
-        ssims.append(math.exp(-abs(f - m) / max(s, abs(m) * 0.25 + 1e-6)))
-    shape = sum(ssims) / len(ssims) if ssims else 0.0
-
-    comps = {"delta": delta_sim, "ngram": ngram, "rhythm": rhythm, "vocab": vocab,
-             "punct": punct, "shape": shape}
-    composite = 100 * sum(WEIGHTS[k] * v for k, v in comps.items())
-
-    return {
-        "fingerprint": fp,
-        "burrows_delta": round(delta, 3),
-        "components": {k: round(v, 3) for k, v in comps.items()},
-        "composite": round(composite, 1),
-        "reliable": fp["words"] >= MIN_WORDS_RELIABLE,
-    }
+def engine_of(pack: VoicePack) -> dict:
+    """Which voicemetric build produced this pack's baselines, if it recorded one."""
+    p = pack.params_dir / "baselines.json"
+    if not p.is_file():
+        return {}
+    return json.loads(p.read_text()).get("_engine", {})
 
 
 def score_against_pack(text: str, pack: VoicePack, register: str | None = None) -> dict:
-    """Score text against one register (or all, returning the best + full table)."""
+    """Score text against one register of a pack (or all, returning the best + full table)."""
     baselines = load_baselines(pack)
     if not baselines:
         raise RuntimeError(f"no baselines for voice '{pack.name}' — run: revoice learn {pack.name}")
@@ -242,7 +115,8 @@ def score_against_pack(text: str, pack: VoicePack, register: str | None = None) 
     results = {}
     for reg in targets:
         if reg not in baselines:
-            raise RuntimeError(f"register '{reg}' not in voice '{pack.name}' (have: {sorted(baselines)})")
+            raise RuntimeError(
+                f"register '{reg}' not in voice '{pack.name}' (have: {sorted(baselines)})")
         r = score_text(text, baselines[reg])
         r["calibration"] = calib.get(reg, {})
         results[reg] = r

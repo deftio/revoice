@@ -135,7 +135,8 @@ spells out exactly what goes where).
 | `revoice run <file>` | revoice a document (`--strength`, `--register`, `--critique`, `--raw`, `--json`) |
 | `revoice stats <file>` | fingerprint + content blend + voice match (`--format text\|json\|md\|html`) |
 | `revoice judge a b` | rubric-judge a rewrite against its original |
-| `revoice bench [corpus]` | measure whether the voice metric actually discriminates authors — AUC/Cllr by length, ablation, topic control; no LLM |
+| `revoice space [corpus]` | writing style as 17 named interpretable axes — coordinates, group positions, effective dimensionality; no LLM |
+| `revoice bench [corpus]` | measure whether the voice metric actually discriminates authors — AUC/Cllr by length, per-genre breakdown, ablation, `--hard-negatives`, `--fit` weights; no LLM |
 | `revoice train prep <voice>` | build the fine-tuning dataset (flywheel + de-voicing bootstrap) + ready-to-run unsloth/MLX scripts |
 | `revoice serve --gui` | API server + single-file review GUI |
 | `revoice doctor` | config + provider diagnostics with raw model replies |
@@ -162,14 +163,20 @@ voice outlives every API it ever called. No dependabot; upgrades are deliberate.
 
 ```
 revoice/           the package
-  core/            spans, stylometry, metrics, verify, bench, segments, preflight,
-                   pipeline, indexer, profiles, style, lint, rubrics, report, voicepack
+  voicemetric/     the voice-similarity engine (standalone; own README + version)
+                   features · baseline · space · chart · verify · bench
+  rubric/          generic anchored-rubric judging (standalone; own README + version)
+  core/            spans, segments, preflight, pipeline, indexer, profiles, style,
+                   lint, metrics (the pack-aware seam), rubrics, report, voicepack
   providers/       ollama, anthropic, openrouter, openai_compat, stub
-  rubric/          generic anchored-rubric judging (standalone; own README)
   static/          the GUI (one HTML file)
   cli.py serve.py  typer CLI · FastAPI server
 docs/architecture.md   full design doc (three-pass model, fine-tuning path, roadmap)
 docs/metrics.md        voice-metric design, measurements, and validation plan
+scripts/fetch_bench_corpus.py      the 1,600-sample / 70-author / 11-genre
+                       public-domain authorship corpus the bench runs against
+scripts/fetch_register_corpus.py   140 modern documents across 5 registers
+                       (encyclopedic, scientific, regulatory, technical, press)
 examples/voices/       twain/ and darwin/ demo corpora (public domain)
 tests/                 pytest suite (stub provider — runs offline)
 ```
@@ -189,11 +196,22 @@ pair mining (Phase 4), first LoRA runs + eval (Phase 5), docx/pptx round-trip
 (Phase 6).
 **Current focus — the voice metric.** Everything revoice decides (minimal-touch,
 register attribution, flywheel labels, prompted-vs-tuned comparisons) rests on one
-question: *is this passage already in the target voice?* `revoice bench` now measures
-that, and the answer today is no better than it should be — topic-controlled AUC 0.650,
-Cllr 0.941 against a 1.0 "don't know" baseline, and 14% of the author's own text kept
-untouched at a 5% false-positive rate. Fixing the instrument comes before tuning any
-model, because until it works nothing downstream is measurable.
+question: *is this passage already in the target voice?* `revoice bench` measures it
+against a topic-controlled corpus of era- and genre-matched authors that
+`scripts/fetch_bench_corpus.py` builds from public-domain texts.
+
+The corpus is 1,594 samples from **70 authors across 11 genres** — including a
+`technical` group (manuals, trade primers, clinical and cookery writing) that no
+standard authorship corpus contains and that is the register revoice's users write in.
+
+Where it stands: the span-attribution units error is fixed — the fraction of the
+author's own prose wrongly rewritten fell from **79% to 11%** — and the weights are
+fitted across all 70 authors rather than guessed. Discrimination is real but modest
+and strongly genre-dependent: AUC 0.69 telling comic writers apart, **0.67 on technical
+prose**, 0.55 on academic philosophy. Cllr near 0.94 says the absolute numbers still
+carry little information. Good enough to protect your sentences; not good enough to
+attribute authorship. Next: General Imposters calibration, then whether a style
+embedding earns its dependency.
 Full evidence, SOTA survey, and plan: [docs/metrics.md](docs/metrics.md).
 
 Details: [docs/architecture.md](docs/architecture.md).

@@ -11,7 +11,6 @@
 <body>
 <div id="app"></div>
 <script>
-bw.loadStyles(THEME);
 
 bw.mount('#app', sitePage('getting-started.html', [
 
@@ -36,21 +35,27 @@ bw.mount('#app', sitePage('getting-started.html', [
   ]),
 
   section('The commands', [
-    { t:'div', a:{style:bw.s({overflowX:'auto'})}, c:{ t:'table', a:{class:'bw_table', style:bw.s({width:'100%'})}, c:[
-      { t:'thead', c:{t:'tr', c:[{t:'th',c:'command'},{t:'th',c:'what it does'}]} },
-      { t:'tbody', c:[
+    scrollTable({
+      data: [
         ['voices add / list-voices', 'create / list voice packs'],
         ['learn <voice>', 'classify corpus → index, profiles, exemplars, baselines (incremental — rerun after adding files)'],
         ['plan <file>', 'deterministic document eval: kind, blend, densities, chunk seams — zero LLM'],
         ['run <file>', 'revoice a document · --strength 0..1 · --register · --critique · --cohesion · --raw · --json'],
         ['stats <file>', 'fingerprint + content blend + voice match · --format text|json|md|html'],
         ['judge <a> <b>', 'rubric-judge a rewrite against its original'],
+        ['bench [corpus]', 'measure whether the voice metric can tell authors apart — AUC/Cllr by length, no LLM'],
         ['serve --gui', 'API server + review GUI (accept/reject/edit feeds the training set)'],
         ['train prep <voice>', 'build fine-tuning dataset + ready-to-run MLX / unsloth scripts'],
         ['doctor', 'config, provider round-trips, privacy audit'],
         ['help <topic>', 'man-page docs: workflow · registers · config · providers · voicepacks · pipeline · privacy']
-      ].map(function(r){ return {t:'tr', c:[{t:'td', c:{t:'code', c:'revoice '+r[0]}}, {t:'td', c:r[1]}]}; }) }
-    ]}}
+      ].map(function (r) { return { cmd: r[0], does: r[1] }; }),
+      columns: [
+        { key: 'cmd', label: 'command',
+          render: function (v) { return { t: 'code', c: 'revoice ' + v }; } },
+        { key: 'does', label: 'what it does' }
+      ],
+      hover: true
+    })
   ]),
 
   section('Use it as a service', [

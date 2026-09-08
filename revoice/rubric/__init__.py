@@ -18,6 +18,8 @@ See README.md in this directory.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections import Counter
 from collections.abc import Callable
@@ -27,7 +29,49 @@ import yaml
 
 Llm = Callable[[str, str], str]
 
-__all__ = ["judge_all", "judge_dimension", "load_rubrics_file", "vote_metrics", "Llm"]
+# The scoring CONTRACT this module implements — the model picks a named choice, the code
+# maps choices to numbers — has not changed and is not expected to, hence 1.x. A MAJOR
+# bump would mean results recorded earlier are no longer comparable to new ones.
+__version__ = "1.0.0"
+
+__all__ = [
+    "judge_all", "judge_dimension", "load_rubrics_file", "vote_metrics", "Llm",
+    "version", "describe", "rubric_signature",
+]
+
+
+def version() -> str:
+    """The engine version, for recording alongside any result it produced."""
+    return __version__
+
+
+def rubric_signature(rubrics: dict) -> str:
+    """Short stable hash of the rubric spec that produced a judgment.
+
+    The version alone is not enough for reproducibility: the numbers come from the
+    caller's YAML — its dimensions, choices, score mappings and weights — so two runs of
+    the same engine version are comparable only if they used the same spec. Recording
+    this beside the version is what makes "why did last month's composite differ?"
+    answerable instead of archaeological.
+    """
+    payload = json.dumps(
+        {name: {"choices": sorted(dim.get("choices") or {}),
+                "scores": dict(sorted((dim.get("scores") or {}).items())),
+                "weight": dim.get("weight"),
+                "reject_below": dim.get("reject_below")}
+         for name, dim in sorted(rubrics.items())},
+        sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode()).hexdigest()[:12]
+
+
+def describe(rubrics: dict | None = None) -> dict:
+    """Everything a caller should record to make a judgment reproducible."""
+    out = {"name": "rubric", "version": __version__,
+           "scoring": "model classifies, code computes", "llm_numbers": False}
+    if rubrics is not None:
+        out["rubric_signature"] = rubric_signature(rubrics)
+        out["dimensions"] = sorted(rubrics)
+    return out
 
 _SYSTEM = """RUBRIC_JUDGE
 You judge ONE dimension of a piece of text. Answer with exactly one word:
@@ -158,4 +202,5 @@ def judge_all(llm: Llm, rubrics: dict, candidate: str, original: str | None = No
                 rejected.append(name)
     return {"dimensions": dims,
             "composite": round(acc / total_w, 3) if total_w else None,
-            "rejected_by": rejected}
+            "rejected_by": rejected,
+            "engine": describe(rubrics)}

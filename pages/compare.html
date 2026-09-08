@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>revoice — compare two texts</title>
-<meta name="description" content="Drop a reference text and a candidate text and measure how close the voices are — Burrows' Delta, n-grams, rhythm, punctuation — entirely in your browser.">
+<meta name="description" content="Paste your original and an edited version and measure how far the register drifted, component by component — n-grams, Burrows' Delta, rhythm, punctuation. Runs entirely in your browser.">
 <script src="https://cdn.jsdelivr.net/npm/bitwrench/dist/bitwrench.umd.min.js"></script>
 <script src="site.js"></script>
 <script src="stylometry.js"></script>
@@ -12,88 +12,182 @@
 <body>
 <div id="app"></div>
 <script>
-bw.loadStyles(THEME);
-bw.injectCSS(bw.css({
-  '.vbar': { height: '12px', borderRadius: '4px', background: '#4a6fa5',
-             display: 'inline-block', verticalAlign: 'middle' },
-  '.cmp_grid': { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.9em' },
-  '@media (max-width: 700px)': { '.cmp_grid': { gridTemplateColumns: '1fr' } },
-  '.cmp_grid textarea': { width: '100%', font: 'inherit', fontSize: '0.93em', padding: '0.6em' }
-}));
+/* Compare two texts.
+ *
+ * This page used to answer "is this the same author?" with confident bands
+ * ("statistically indistinguishable"). It cannot. Measured by `revoice bench`
+ * under a topic-controlled protocol the browser metric scores macro AUC 0.687 /
+ * EER 0.367, and on the bundled corpora it rates Darwin's Autobiography as no
+ * drift from Twain's A Dog's Tale (+2.5 sigma) while rating Twain's own comic
+ * diary as clear drift (-5.4 sigma) -- because the surface features it reads
+ * track REGISTER far more than authorship. So the page now answers the question
+ * it can actually answer -- how far did the register move, and in which
+ * components -- and states the failure mode on the page rather than in a
+ * footnote.
+ *
+ * Presentation note: the score is reported as a z-score against the reference's
+ * own leave-one-out variation band, not as a percentage of it. A ratio of two
+ * numbers that both sit near 55 saturates and amplifies noise; "how many standard
+ * deviations outside the reference's own spread" does not, and it has a meaning.
+ */
 
-function wordsOf(t){ return ((t.toLowerCase().match(/[a-z']+/g))||[]).length; }
+var state = { result: null };
 
-function verdictFor(rel){
-  if (rel >= 90) return ['bw_success', 'statistically indistinguishable from the reference voice'];
-  if (rel >= 75) return ['bw_success', 'close — within the reference’s own variation band'];
-  if (rel >= 60) return ['bw_warning', 'related, but a reader may notice the difference'];
-  return ['bw_warning', 'different voice'];
+function bandFor(z) {
+  if (z >= -1) return ['success', 'no measurable drift',
+    'The candidate sits no further from the reference than the reference’s own passages sit from each other. The surface register did not move. This does NOT mean the same person wrote it — see the warning above.'];
+  if (z >= -3) return ['warning', 'some drift',
+    'A detectable shift, but within the range where this measure is unreliable. Read the component table rather than the headline number.'];
+  return ['danger', 'clear drift',
+    'The candidate is measurably further from the reference than the reference’s own passages are. The component table shows where it came from.'];
 }
 
-function compare(){
-  var ref = bw.el('#ref').value || '', cand = bw.el('#cand').value || '';
-  if (ref.trim().length < 200 || cand.trim().length < 100){
-    bw.el('#results', {t:'p', c:'(need more text — a few paragraphs of reference and at least one of candidate)'});
-    return;
+function componentRows(parts, delta) {
+  return [
+    { name: 'function words (Burrows’ Δ)', v: parts.delta,
+      what: 'unconscious grammar-word habits — the classic authorship signal (raw Δ ' + delta.toFixed(2) + ')' },
+    { name: 'character n-grams', v: parts.ngram,
+      what: 'sub-word texture: spelling, morphology, spacing habits' },
+    { name: 'sentence rhythm', v: parts.rhythm,
+      what: 'the distribution of sentence lengths' },
+    { name: 'punctuation', v: parts.punct,
+      what: 'per-sentence punctuation habits' }
+  ];
+}
+
+function resultView(d) {
+  if (!d) {
+    return bw.makeAlert({ variant: 'light',
+      content: 'Paste a reference and a candidate, then press “compare”.' });
+  }
+  if (d.error) return bw.makeAlert({ variant: 'warning', content: d.error });
+
+  var b = bandFor(d.z);
+  var weakest = d.rows.slice().sort(function (x, y) { return x.v - y.v; })[0];
+
+  return { t: 'div', c: [
+    { t: 'div', a: { class: 'rv_cards' }, c: [
+      bw.makeStatCard({ value: (d.z >= 0 ? '+' : '') + d.z.toFixed(1), suffix: ' σ',
+                        label: 'register distance from the reference’s own spread', variant: b[0] }),
+      bw.makeStatCard({ value: d.composite.toFixed(0), label: 'raw similarity score',
+                        variant: '' }),
+      bw.makeStatCard({ value: d.self[0].toFixed(0) + ' ± ' + d.self[1].toFixed(0),
+                        label: 'reference self-band (' + d.windows + ' windows, leave-one-out)',
+                        variant: '' })
+    ]},
+
+    bw.makeAlert({ variant: b[0], content: { t: 'span', c: [
+      { t: 'b', c: b[1] + '. ' }, b[2] ]}}),
+
+    bw.makeAlert({ variant: 'info', content: { t: 'span', c: [
+      { t: 'b', c: 'Biggest movement: ' }, weakest.name,
+      ' (similarity ' + weakest.v.toFixed(2) + ') — ', weakest.what, '.' ]}}),
+
+    scrollTable({
+      data: d.rows,
+      columns: [
+        { key: 'name', label: 'component' },
+        { key: 'v', label: 'similarity to reference',
+          render: function (v) {
+            return bw.makeProgress({ value: Math.round(v * 100),
+              variant: v >= 0.75 ? 'success' : (v >= 0.5 ? 'warning' : 'danger'),
+              label: v.toFixed(2) });
+          } },
+        { key: 'what', label: 'what it measures' }
+      ],
+      hover: true
+    }),
+
+    d.caveats.length ? bw.makeAlert({ variant: 'warning', content: { t: 'span', c: [
+      { t: 'b', c: 'About this run: ' }, d.caveats.join(' · ') ]}}) : ''
+  ]};
+}
+
+function compare(panel) {
+  var ref = (bw.el('#ref') || {}).value || '';
+  var cand = (bw.el('#cand') || {}).value || '';
+  if (ref.trim().length < 200 || cand.trim().length < 100) {
+    state.result = { error: 'Need more text — a few paragraphs of reference and at least one of candidate.' };
+    return bw.refresh(panel);
   }
   var base = buildBaseline(ref);
   var r = score(fingerprint(cand), base);
-  var p = r.parts;
-  var v = verdictFor(r.rel);
-  var rw = wordsOf(ref), cw = wordsOf(cand);
-  var caveats = [];
-  if (rw < 500) caveats.push('reference is short (' + rw + ' words) — the baseline is coarse; 500+ works much better');
-  if (cw < 150) caveats.push('candidate is short (' + cw + ' words) — scores are noisy under ~150');
-  if (base.windows < 3) caveats.push('reference yielded only ' + base.windows + ' window(s) — variation band is a guess');
+  var rw = ((ref.toLowerCase().match(/[a-z']+/g)) || []).length;
+  var cw = ((cand.toLowerCase().match(/[a-z']+/g)) || []).length;
 
-  bw.el('#results', { t:'div', a:{class:'bw_card'}, c:[
-    { t:'h3', c:['voice match: ',
-      { t:'span', a:{class:'bw_badge ' + v[0]}, c: r.rel.toFixed(0) + ' / 100' },
-      ' ', { t:'span', a:{style:bw.s({opacity:'0.75', fontSize:'0.9em'})}, c: v[1] } ]},
-    { t:'p', c:['reference self-band: ' + base.self[0].toFixed(0) + ' ± ' + base.self[1].toFixed(0) +
-      ' (how much the reference varies against itself — 100 means the candidate sits inside that band)'] },
-    { t:'div', a:{style:bw.s({overflowX:'auto'})}, c:{ t:'table', a:{class:'bw_table', style:bw.s({width:'100%'})}, c:[
-      { t:'thead', c:{t:'tr', c:['component','similarity','what it measures'].map(function(h){return {t:'th',c:h};})} },
-      { t:'tbody', c:[
-        ['function words (Burrows’ Delta)', p.delta, 'unconscious grammar-word habits — the classic authorship signal (raw Δ ' + r.delta.toFixed(2) + ')'],
-        ['character n-grams', p.ngram, 'sub-word texture: spellings, morphology, spacing habits'],
-        ['sentence rhythm', p.rhythm, 'sentence-length distribution'],
-        ['punctuation', p.punct, 'per-sentence punctuation habits']
-      ].map(function(row){
-        return { t:'tr', c:[
-          { t:'td', c: row[0] },
-          { t:'td', c: { t:'span', c:[
-            { t:'span', a:{class:'vbar', style:bw.s({width: Math.max(row[1]*180,2)+'px'})} },
-            { t:'span', a:{style:bw.s({marginLeft:'0.5em', fontSize:'0.9em'})}, c:' '+row[1].toFixed(2) } ]} },
-          { t:'td', a:{style:bw.s({fontSize:'0.9em', opacity:'0.85'})}, c: row[2] } ]};
-      }) }
-    ]}},
-    caveats.length ? { t:'p', a:{style:bw.s({fontSize:'0.9em', opacity:'0.8'})},
-      c: '⚠ ' + caveats.join(' · ') } : ''
-  ]});
+  var caveats = [];
+  if (rw < 500) caveats.push('the reference is short (' + rw + ' words) — the baseline is coarse; 500+ works much better');
+  if (cw < 150) caveats.push('the candidate is short (' + cw + ' words) — scores are noisy below ~150');
+  if (base.windows < 3) caveats.push('the reference yielded only ' + base.windows + ' window(s), so the variation band is close to a guess');
+  if (base.contaminated) caveats.push('too few windows to hold one out, so the self-band is optimistic');
+
+  state.result = { z: r.z, composite: r.composite, self: base.self, windows: base.windows,
+                   rows: componentRows(r.parts, r.delta), caveats: caveats };
+  bw.refresh(panel);
 }
 
 bw.mount('#app', sitePage('compare.html', [
-  { t:'h1', c:'Compare two texts' },
-  { t:'p',
-    c:'Use this when you write something and then have others — AI or not — edit your copy, and you want a quick check that your style survived. Paste your original as the REFERENCE and the edited version as the CANDIDATE.' },
-  { t:'p', c:'The reference becomes a live baseline — windowed, aggregated, self-calibrated, exactly what revoice does with a full corpus, in miniature — and the candidate is scored against it. Entirely in your browser: nothing is uploaded, nothing leaves this page.' },
-  { t:'div', a:{class:'cmp_grid'}, c:[
-    { t:'div', a:{class:'bw_card'}, c:[
-      { t:'p', c:{t:'b', c:'Reference — the voice to match'} },
-      { t:'textarea', a:{id:'ref', rows:'12', placeholder:'A few paragraphs (500+ words works well) of one author’s writing…'} }
+  { t: 'h1', c: 'Compare two texts' },
+  { t: 'p', c: 'You wrote something; someone — or something — edited it. Paste your original as the reference and the edited version as the candidate, and this page measures how far the style moved, component by component. Everything runs in your browser; nothing is uploaded.' },
+
+  bw.makeAlert({ variant: 'warning', content: { t: 'span', c: [
+    { t: 'b', c: 'What this measures — and what it does not. ' },
+    'This is a ', { t: 'b', c: 'register-drift detector' }, ', not an authorship test. It reads surface habits: sub-word texture, function-word rates, sentence rhythm, punctuation. Those track ',
+    { t: 'b', c: 'how a passage is pitched' }, ' far more than ', { t: 'b', c: 'who wrote it' },
+    '. Concretely, on our own example corpora: with Twain’s ', { t: 'i', c: 'A Dog’s Tale' },
+    ' as the reference, Darwin’s first-person ', { t: 'i', c: 'Autobiography' },
+    ' reads as no drift at all (+2.5σ) while Twain’s own comic diary reads as clear drift (−5.4σ) — because the first pair share a register and the second pair do not. Under a topic-controlled protocol the measure scores AUC 0.69 and an equal error rate of 0.37. Use it to check whether an edit moved your register; do not use it to decide who wrote something.'
+  ]}}),
+
+  section('Paste the two texts', [
+    { t: 'div', a: { class: 'rv_split' }, c: [
+      { t: 'div', a: { class: 'bw_bccl_card' }, c: { t: 'div', a: { class: 'bw_bccl_card_body' }, c:
+        bw.makeFormGroup({
+          label: 'Reference — the voice to match',
+          help: 'Your original. 500+ words, ideally several paragraphs on more than one topic.',
+          input: bw.makeTextarea({ id: 'ref', rows: 12,
+            placeholder: 'A few paragraphs of the writing you want to preserve…' })
+        }) }},
+      { t: 'div', a: { class: 'bw_bccl_card' }, c: { t: 'div', a: { class: 'bw_bccl_card_body' }, c:
+        bw.makeFormGroup({
+          label: 'Candidate — did the style survive?',
+          help: 'The edited version. 150+ words for a stable reading.',
+          input: bw.makeTextarea({ id: 'cand', rows: 12,
+            placeholder: 'The text to test…' })
+        }) }}
     ]},
-    { t:'div', a:{class:'bw_card'}, c:[
-      { t:'p', c:{t:'b', c:'Candidate — is this the same voice?'} },
-      { t:'textarea', a:{id:'cand', rows:'12', placeholder:'The text to test (150+ words for stable scores)…'} }
-    ]}
-  ]},
-  { t:'p', c:{ t:'button', a:{class:'bw_btn bw_primary', onclick:compare}, c:'compare voices' } },
-  { t:'div', a:{id:'results'} },
-  { t:'p', a:{style:bw.s({opacity:'0.75', fontSize:'0.9em'})},
-    c:['Honest limits: these browser metrics reliably detect drift toward machine-flavored prose and clearly different voices; two skilled authors writing in the same register and era can overlap at short lengths. The local tool adds vocabulary similarity, register attribution, content-blend analysis, and full corpus calibration, which sharpen exactly that case — see ',
-       { t:'a', a:{href:'getting-started.html'}, c:'getting started' }, '.'] }
+    { t: 'div', a: { id: 'go' }, c: '' },
+    { t: 'div', a: { id: 'results' }, c: '' }
+  ]),
+
+  section('How to read the result', [
+    { t: 'p', c: 'The reference is split into windows and each is scored against a baseline built from the others — leave-one-out, so no window is graded against itself. That gives a self-band: how much the reference varies against its own writing. The candidate is then placed relative to that band.' },
+    cardRow([
+      { title: '≥ −1σ · no measurable drift', content: 'The candidate is no further from the reference than the reference’s own paragraphs are from each other.' },
+      { title: '−1σ to −3σ · some drift', content: 'Something moved, but the measure is unreliable at that distance. Look at which component dropped.' },
+      { title: '< −3σ · clear drift', content: 'A real, measurable change in surface style. The component table shows where it came from.' }
+    ]),
+    bw.makeAlert({ variant: 'info', content: { t: 'span', c: [
+      { t: 'b', c: 'Two failure modes worth knowing. ' },
+      'First, topic: if reference and candidate are about the same subject the score inflates, and if they are on different subjects it deflates — so give the reference material on more than one topic. Second, register: a different author writing in the same register will look like no drift at all. Both are consequences of measuring surface form, and both are why the local tool adds corpus calibration and register attribution on top of this.'
+    ]}})
+  ]),
+
+  section('What the local tool adds', [
+    { t: 'p', c: ['This page runs a four-component subset in JavaScript against a reference you paste. The installed tool builds a real corpus baseline, adds vocabulary similarity, register attribution and content-blend analysis, and ships ',
+      { t: 'code', c: 'revoice bench' }, ' — the harness that produced the reliability numbers quoted above. Evidence and the plan to improve them: ',
+      { t: 'a', a: { href: 'https://github.com/deftio/revoice/blob/main/docs/metrics.md' }, c: 'docs/metrics.md' },
+      '. Setup: ', { t: 'a', a: { href: 'getting-started.html' }, c: 'getting started' }, '.'] }
+  ])
 ]));
+
+var panel = bw.mount('#results', { t: 'div', o: {
+  state: state,
+  render: function (el) { bw.DOM(el, resultView(state.result)); }
+}});
+
+bw.DOM('#go', bw.makeButton({ text: 'compare', variant: 'primary',
+                              onclick: function () { compare(panel); } }));
 </script>
 </body>
 </html>

@@ -1,4 +1,4 @@
-from revoice.core.stylometry import char_ngram_profile, cosine, fingerprint, word_bigram_profile
+from revoice.voicemetric.features import char_ngram_profile, cosine, fingerprint, word_bigram_profile
 
 TEXT = "The quick brown fox jumps over the lazy dog. It was the best of times; it was the worst of times."
 

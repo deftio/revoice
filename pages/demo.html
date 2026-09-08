@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>revoice — voice-match demo</title>
-<meta name="description" content="Paste any text and score it against example voices (Mark Twain, Charles Darwin) with revoice's stylometrics — entirely in your browser, nothing uploaded.">
+<meta name="description" content="Score text against example author baselines (Mark Twain, Charles Darwin) with revoice's browser stylometrics — including an honest look at how reliable the measure actually is.">
 <script src="https://cdn.jsdelivr.net/npm/bitwrench/dist/bitwrench.umd.min.js"></script>
 <script src="site.js"></script>
 <script src="stylometry.js"></script>
@@ -12,82 +12,188 @@
 <body>
 <div id="app"></div>
 <script>
-bw.loadStyles(THEME);
-bw.injectCSS(bw.css({
-  '.vbar': { height: '12px', borderRadius: '4px', background: '#4a6fa5',
-             display: 'inline-block', verticalAlign: 'middle' }
-}));
+/* Voice-match demo.
+ *
+ * Honesty rules this page follows, because the measure is weak enough that a
+ * confident-looking UI would mislead:
+ *   - samples are LABELLED by provenance; two of them are training data and say so
+ *   - the winning voice is reported with its MARGIN over the runner-up, because a
+ *     1-point win across four baselines is not a result
+ *   - the measured reliability (AUC 0.64 / EER 0.40 under topic control) is stated
+ *     on the page, not buried
+ */
 
-// ---- page ----
-var SAMPLES = {
-  'Twain-ish': "When I was well grown, at last, I was sold and taken away, and I never saw her again. She was broken-hearted, and so was I, and we cried; but she comforted me as well as she could, and said we were sent into this world for a wise and good purpose, and must do our duties without repining, take our life as we might find it, live it for the best good of others, and never mind about the results; they were not our affair. She said men who did like this would have a noble and beautiful reward by and by in another world, and although we animals would not go there, to do well and right without reward would give to our brief lives a worthiness and dignity which in itself would be a reward. One may see by this that she had a wise and thoughtful head, for all there was so much lightness and vanity in it.",
-  'Darwin-ish': "When on board H.M.S. Beagle, I was much struck with certain facts in the distribution of the inhabitants of South America, and in the geological relations of the present to the past inhabitants of that continent. These facts seemed to me to throw some light on the origin of species — that mystery of mysteries, as it has been called by one of our greatest philosophers. On my return home, it occurred to me that something might perhaps be made out on this question by patiently accumulating and reflecting on all sorts of facts which could possibly have any bearing on it. After five years' work I allowed myself to speculate on the subject, and drew up some short notes; these I enlarged in the year following into a sketch of the conclusions which then seemed to me probable: from that period to the present day I have steadily pursued the same object.",
-  'AI-flavored': "In today's fast-paced world, it's important to note that effective writing serves as a testament to clear thinking. Moreover, leveraging robust and scalable communication strategies ensures seamless alignment across stakeholders and unlocks the full potential of any organization. It's worth noting that comprehensive approaches to documentation play a crucial role in navigating the complexities of the modern workplace. Furthermore, by diving deep into best practices, teams can elevate their deliverables and streamline their workflows. Ultimately, this isn't just about writing — it's about empowering seamless collaboration across the ever-evolving landscape of knowledge work. In conclusion, robust communication remains a game-changer for organizations seeking to deliver value at scale."
-};
+var VOICES = null, SAMPLES = null;
 
-var VOICES = null;
+/* colour a 0-100 relative score the same way everywhere */
+function scoreVariant(rel) {
+  if (rel >= 95) return 'success';
+  if (rel >= 80) return 'info';
+  if (rel >= 65) return 'warning';
+  return 'danger';
+}
 
-function bar(v){ return { t:'span', c:[
-  { t:'span', a:{class:'vbar', style:bw.s({width: Math.max(v*2.2,2)+'px'})} },
-  { t:'span', a:{style:bw.s({marginLeft:'0.5em', fontSize:'0.9em'})}, c:' '+v.toFixed(1) } ]}; }
+function marginNote(margin) {
+  if (margin >= 15) return ['success', 'clear winner — ' + margin.toFixed(0) + ' points clear of the runner-up'];
+  if (margin >= 8)  return ['info', 'modest lead — ' + margin.toFixed(0) + ' points over the runner-up'];
+  if (margin >= 3)  return ['warning', 'narrow — only ' + margin.toFixed(1) + ' points separate the top two voices. Treat this as a coin flip with a lean.'];
+  return ['danger', 'no real winner — the top two voices are within ' + margin.toFixed(1) + ' points. This measure cannot tell them apart.'];
+}
 
-function analyze(){
-  var text = bw.el('#txt').value || '';
-  if(text.trim().length < 40){ bw.el('#results', {t:'p', c:'(need a bit more text)'}); return; }
-  if(!VOICES){ bw.el('#results', {t:'p', c:'loading baselines…'}); return; }
-  var fp = fingerprint(text);
-  var rows = [];
-  Object.keys(VOICES).forEach(function(v){
-    Object.keys(VOICES[v]).forEach(function(reg){
-      rows.push({ label: v+' · '+reg, r: score(fp, VOICES[v][reg]) });
+/* ---- results panel: one stateful TACO, refreshed in place ---- */
+var results = { data: null };
+
+function resultsView(d) {
+  if (!d) {
+    return bw.makeAlert({
+      content: 'Pick a sample above or paste your own text, then press “score it”.',
+      variant: 'light'
+    });
+  }
+  if (d.error) return bw.makeAlert({ content: d.error, variant: 'warning' });
+
+  var top = d.rows[0], margin = d.rows[0].rel - d.rows[1].rel;
+  var mv = marginNote(margin);
+
+  return { t: 'div', c: [
+    { t: 'div', a: { class: 'rv_cards' }, c: [
+      bw.makeStatCard({ value: top.rel.toFixed(0), label: 'best match: ' + top.label,
+                        suffix: ' / 100', variant: scoreVariant(top.rel) }),
+      bw.makeStatCard({ value: margin.toFixed(1), label: 'margin over runner-up (' + d.rows[1].label + ')',
+                        variant: mv[0] }),
+      bw.makeStatCard({ value: d.words, label: 'words scored',
+                        variant: d.words < 150 ? 'warning' : '' })
+    ]},
+    bw.makeAlert({ variant: mv[0], content: { t: 'span', c: [{ t: 'b', c: 'Reading this: ' }, mv[1]] } }),
+    d.words < 150 ? bw.makeAlert({ variant: 'warning', content:
+      'Under 150 words these scores are noisy — the components that carry the signal need more text to stabilise.' }) : '',
+    scrollTable({
+      data: d.rows,
+      columns: [
+        { key: 'label', label: 'voice · register' },
+        { key: 'rel', label: 'match (100 ≈ corpus self-score)',
+          render: function (v) {
+            return bw.makeProgress({ value: Math.min(v, 115), max: 115,
+                                     variant: scoreVariant(v), label: v.toFixed(0) });
+          } },
+        { key: 'delta', label: 'function words (Δ)' },
+        { key: 'ngram', label: 'n-grams' },
+        { key: 'rhythm', label: 'rhythm' },
+        { key: 'punct', label: 'punctuation' }
+      ],
+      sortable: true, hover: true
+    })
+  ]};
+}
+
+function analyze(el) {
+  var text = (bw.el('#txt') || {}).value || '';
+  if (!VOICES) { results.data = { error: 'baselines still loading…' }; return bw.refresh(el); }
+  if (text.trim().length < 40) { results.data = { error: 'Need a bit more text — a paragraph at minimum.' }; return bw.refresh(el); }
+
+  var fp = fingerprint(text), rows = [];
+  Object.keys(VOICES).forEach(function (v) {
+    Object.keys(VOICES[v]).forEach(function (reg) {
+      var r = score(fp, VOICES[v][reg]);
+      rows.push({ label: v + ' · ' + reg, rel: r.rel,
+                  delta: r.parts.delta.toFixed(2), ngram: r.parts.ngram.toFixed(2),
+                  rhythm: r.parts.rhythm.toFixed(2), punct: r.parts.punct.toFixed(2) });
     });
   });
-  rows.sort(function(a,b){ return b.r.rel - a.r.rel; });
-  var best = rows[0];
-  bw.el('#results', { t:'div', a:{class:'bw_card'}, c:[
-    { t:'h3', c:['likely match: ',
-      best.r.rel >= 75
-        ? { t:'span', a:{class:'bw_badge bw_success'}, c: best.label }
-        : { t:'span', a:{class:'bw_badge bw_warning'}, c:'none — below every voice’s corpus self-band' },
-      ' ', { t:'span', a:{style:bw.s({opacity:'0.7', fontSize:'0.85em'})},
-            c:'('+fp.words+' words'+(fp.words<150?' — short, noisy':'')+')' }] },
-    { t:'div', a:{style:bw.s({overflowX:'auto'})}, c:{ t:'table', a:{class:'bw_table', style:bw.s({width:'100%'})}, c:[
-      { t:'thead', c:{ t:'tr', c:['voice · register','match (vs corpus self-score)','delta (raw)','ngram','rhythm','punct']
-          .map(function(h){return {t:'th', c:h};}) } },
-      { t:'tbody', c: rows.map(function(row){
-          var p = row.r.parts;
-          return { t:'tr', c:[
-            { t:'td', c: row.label },
-            { t:'td', c: bar(row.r.rel) },
-            { t:'td', c: p.delta.toFixed(2)+' ('+row.r.delta.toFixed(2)+')' },
-            { t:'td', c: p.ngram.toFixed(2) },
-            { t:'td', c: p.rhythm.toFixed(2) },
-            { t:'td', c: p.punct.toFixed(2) } ]};
-        }) }
-    ]}}
-  ]});
+  rows.sort(function (a, b) { return b.rel - a.rel; });
+  results.data = { rows: rows, words: fp.words };
+  bw.refresh(el);
+}
+
+function sampleButtons(panel) {
+  if (!SAMPLES) return bw.makeSpinner({ size: 'sm' });
+  var variantFor = { corpus: 'outline_warning', heldout: 'outline_primary', foreign: 'outline_secondary' };
+  return { t: 'div', c: [
+    bw.makeButtonGroup({ size: 'sm', children: Object.keys(SAMPLES).map(function (k) {
+      var s = SAMPLES[k];
+      return bw.makeButton({ text: s.label, variant: variantFor[s.kind] || 'outline_primary',
+        onclick: function () {
+          bw.el('#txt').value = s.text;
+          bw.el('#sample_note', bw.makeAlert({
+            variant: s.kind === 'corpus' ? 'warning' : (s.kind === 'heldout' ? 'info' : 'secondary'),
+            content: { t: 'span', c: [{ t: 'b', c: s.label + ' — ' }, s.note] } }));
+          analyze(panel);
+        } });
+    }) }),
+    { t: 'div', a: { id: 'sample_note' }, c: '' }
+  ]};
 }
 
 bw.mount('#app', sitePage('demo.html', [
-  { t:'h1', c:'Voice-match demo' },
-  { t:'p', c:'Paste text and score it against the example voices — Mark Twain (fiction, essay) and Charles Darwin (memoir, science), built from public-domain corpora — using the same stylometrics revoice runs locally: Burrows’ Delta on function words, character n-grams, sentence rhythm, punctuation habits. Everything runs in your browser; nothing is uploaded anywhere.' },
-  { t:'div', a:{class:'bw_card'}, c:[
-    { t:'p', c: Object.keys(SAMPLES).map(function(name){
-        return { t:'button', a:{class:'bw_btn rv_chip',
-          onclick:function(){ bw.el('#txt').value = SAMPLES[name]; analyze(); } }, c:'sample: '+name };
-      }) },
-    { t:'textarea', a:{id:'txt', rows:'8', style:bw.s({width:'100%', font:'inherit', padding:'0.6em'}),
-      placeholder:'Paste at least a paragraph — 150+ words gives stable scores…'} },
-    { t:'p', c:{ t:'button', a:{class:'bw_btn bw_primary', onclick:analyze}, c:'score it' } }
-  ]},
-  { t:'div', a:{id:'results'} },
-  { t:'p', a:{style:bw.s({opacity:'0.75', fontSize:'0.9em'})},
-    c:'Scores are relative: compare candidates against each other and against each voice’s own corpus self-band (100 ≈ indistinguishable from the corpus). Short texts are noisy — revoice proper reports full calibration bands, and this demo is a subset of its metrics.' }
+  { t: 'h1', c: 'Voice-match demo' },
+  { t: 'p', c: 'Paste text; this page scores it against four baselines built from public-domain corpora — Mark Twain (fiction, essay) and Charles Darwin (memoir, science). Everything runs in your browser; nothing is uploaded.' },
+
+  bw.makeAlert({ variant: 'info', content: { t: 'span', c: [
+    { t: 'b', c: 'What this page is showing. ' },
+    'Each voice has a baseline: the average of its corpus on function-word frequencies, character n-grams, sentence-length rhythm, and punctuation habits. Your text gets the same measurements, and the score is how close they land — normalised so that ',
+    { t: 'b', c: '100 ≈ as close as the corpus is to itself' }, '. Above 100 just means “closer than a typical corpus document”, not “more Twain than Twain”.',
+    { t: 'br' }, { t: 'br' },
+    { t: 'b', c: 'The catch: these habits track register more than authorship. ' },
+    'Sentence rhythm, punctuation and sub-word texture say more about how a passage is pitched than about who wrote it — so a first-person memoir by one author can land close to first-person fiction by another. Watch the margin, not just the winner.'
+  ]}}),
+
+  section('Try it', [
+    { t: 'p', c: 'Two of these samples are training data and are labelled as such — the point is to watch the score fall when you switch to text the baselines have never seen.' },
+    { t: 'div', a: { id: 'samples' }, c: '' },
+    { t: 'div', a: { class: 'bw_bccl_card' }, c: { t: 'div', a: { class: 'bw_bccl_card_body' }, c: [
+      bw.makeFormGroup({
+        label: 'Text to score',
+        help: '150+ words gives stable scores; below that the measure is mostly noise.',
+        input: bw.makeTextarea({ id: 'txt', rows: 9,
+          placeholder: 'Paste a few paragraphs, or pick a sample above…' })
+      }),
+      { t: 'div', a: { id: 'go' }, c: '' }
+    ]}},
+    { t: 'div', a: { id: 'results' }, c: '' }
+  ]),
+
+  section('How much should you trust this?', [
+    { t: 'p', c: 'Honestly: less than the numbers above look. We measured it rather than guessed.' },
+    { t: 'div', a: { class: 'rv_cards' }, c: [
+      bw.makeStatCard({ value: '0.64', label: 'AUC, topic-controlled (0.5 = coin flip)', variant: 'warning' }),
+      bw.makeStatCard({ value: '0.40', label: 'equal error rate (lower is better)', variant: 'warning' }),
+      bw.makeStatCard({ value: '0.93', label: 'Cllr — 1.0 = “don’t know”', variant: 'danger' })
+    ]},
+    bw.makeAlert({ variant: 'warning', content: { t: 'span', c: [
+      { t: 'b', c: 'The big caveat: much of the apparent skill is topic, not voice. ' },
+      'When the reference corpus is allowed to contain other writing about the same subject, the score looks far better than it is. Control for that and roughly a fifth of the performance disappears. Two authors of the same era writing on the same subject can easily be confused, and short passages routinely are.'
+    ]}}),
+    { t: 'p', c: ['Full evidence, the survey of authorship-verification literature, and the plan to fix it: ',
+      { t: 'a', a: { href: 'https://github.com/deftio/revoice/blob/main/docs/metrics.md' }, c: 'docs/metrics.md' },
+      '. You can reproduce every number with ', { t: 'code', c: 'revoice bench' }, '.'] }
+  ]),
+
+  section('What the local tool adds', [
+    { t: 'p', c: ['This page runs a four-component subset in JavaScript. The installed tool adds vocabulary similarity, register attribution, content-blend analysis, full corpus calibration, and ',
+      { t: 'code', c: 'revoice bench' }, ' — the harness that produced the numbers above. See ',
+      { t: 'a', a: { href: 'getting-started.html' }, c: 'getting started' }, '.'] }
+  ])
 ]));
 
-fetch('demo/voices.json').then(function(r){ return r.json(); })
-  .then(function(v){ VOICES = v; })
-  .catch(function(){ bw.el('#results', {t:'p', c:'could not load demo/voices.json — serve this page over http'}); });
+/* mount the interactive bits as stateful regions, then load data */
+var panel = bw.mount('#results', { t: 'div', o: {
+  state: results,
+  render: function (el) { bw.DOM(el, resultsView(results.data)); }
+}});
+
+bw.DOM('#go', bw.makeButton({ text: 'score it', variant: 'primary',
+                              onclick: function () { analyze(panel); } }));
+
+Promise.all([
+  fetch('demo/voices.json').then(function (r) { return r.json(); }),
+  fetch('demo/samples.json').then(function (r) { return r.json(); })
+]).then(function (v) {
+  VOICES = v[0]; SAMPLES = v[1];
+  bw.DOM('#samples', sampleButtons(panel));
+}).catch(function () {
+  bw.DOM('#samples', bw.makeAlert({ variant: 'danger',
+    content: 'Could not load demo/voices.json — serve this page over http rather than file://.' }));
+});
 </script>
 </body>
 </html>

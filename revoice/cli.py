@@ -325,7 +325,17 @@ def doctor(config: Path = _cfg_opt):
 
     Prints the exact raw model output so JSON/format problems are visible instead of silent.
     """
+    import revoice.voicemetric as voicemetric
+    from revoice import rubric
+
     cfg = load_config(config)
+    typer.secho("engines", bold=True)
+    typer.echo(f"  voicemetric {voicemetric.version()}  signature {voicemetric.signature()}"
+               "   (measures voice similarity)")
+    typer.echo(f"  rubric      {rubric.version()}"
+               "                        (judges quality)")
+    typer.echo("  a pack scored under a different signature is not comparable to one scored now")
+    typer.echo("")
     typer.echo(f"data_dir: {cfg.data_dir}  (exists: {cfg.data_dir.is_dir()})")
 
     typer.echo("\n[privacy] voice packs are personal data")
@@ -380,9 +390,25 @@ def status(
     name: str = typer.Argument(..., help="Voice to inspect."),
     config: Path = _cfg_opt,
 ):
-    """Show a voice pack's manifest: readiness, registers found, index stats, adapter versions."""
+    """Show a voice pack's manifest: readiness, registers found, index stats, adapter versions.
+
+    Also warns when the pack's baselines were built by a different voicemetric build —
+    its stored scores and calibration bands are then measuring something subtly
+    different from anything you compute today.
+    """
+    import revoice.voicemetric as voicemetric
+    from revoice.core.metrics import engine_of
+
     pack, _ = _pack(name, config)
     typer.echo(json.dumps(pack.manifest(), indent=2))
+    built = engine_of(pack)
+    if built and built.get("signature") != voicemetric.signature():
+        typer.secho(
+            f"\nwarning: baselines were built by voicemetric {built.get('version')} "
+            f"(signature {built.get('signature')}); this build is {voicemetric.version()} "
+            f"(signature {voicemetric.signature()}).\n"
+            f"         scores are not comparable across signatures — rerun: "
+            f"revoice learn {name}", fg="yellow")
 
 
 @app.command()
@@ -398,6 +424,13 @@ def bench(
                                   help="False-positive rate for the reported operating point."),
     no_content_control: bool = typer.Option(False, "--no-content-control",
                                             help="Skip the topic-leak comparison (roughly halves runtime)."),
+    hard_negatives: bool = typer.Option(False, "--hard-negatives",
+                                        help="Draw different-author queries only from the same genre. "
+                                             "On a multi-genre corpus this is the contrast that matters; "
+                                             "the default mixes in easy cross-genre pairs."),
+    fit: bool = typer.Option(False, "--fit",
+                             help="Fit component weights on half the reference models and report "
+                                  "them with a held-out score."),
     out: Path = typer.Option(None, "--out", "-o", help="Write the full JSON report here."),
     as_json: bool = typer.Option(False, "--json", help="Print JSON instead of the table."),
     verbose: bool = typer.Option(False, "--verbose/--quiet", help="Per-reference-model progress."),
@@ -429,8 +462,8 @@ def bench(
       [green]revoice bench data --queries 100 -o bench.json[/green]   your own voices, more samples
       [green]revoice bench --lengths 50,100,200 --no-content-control[/green]   quick pass
     """
-    from revoice.core.bench import bench as run_bench
-    from revoice.core.bench import render
+    from revoice.voicemetric.bench import bench as run_bench
+    from revoice.voicemetric.bench import render
 
     try:
         lens = tuple(int(x) for x in lengths.split(",") if x.strip())
@@ -443,7 +476,8 @@ def bench(
 
     progress = (lambda item, msg: typer.echo(f"  {item}: {msg}", err=True)) if verbose else None
     try:
-        result = run_bench(corpus, lens, queries, seed, max_fpr, no_content_control, progress)
+        result = run_bench(corpus, lens, queries, seed, max_fpr, no_content_control,
+                           progress, fit, "same-register" if hard_negatives else "any")
     except RuntimeError as e:
         typer.secho(str(e), fg="red")
         raise typer.Exit(1) from None
@@ -456,6 +490,153 @@ def bench(
         typer.echo(render(result))
         if out:
             typer.echo(f"\nfull report: {out}")
+
+
+@app.command()
+def space(
+    corpus: Path = typer.Argument(Path("bench-corpus"),
+                                  help="Corpus root: <group>/training-data/* (voice-pack layout)."),
+    compare: Path = typer.Option(None, "--compare", "-c",
+                                 help="Second corpus to place alongside the first "
+                                      "(e.g. the modern-register corpus)."),
+    text: Path = typer.Option(None, "--text", "-t",
+                              help="Score one document and show its coordinates."),
+    against: str = typer.Option(None, "--against",
+                                help="With --text: the group to measure deviations from."),
+    top: int = typer.Option(8, "--top", help="Axes to show."),
+    svg: Path = typer.Option(None, "--svg",
+                             help="With --text/--against: write the similarity chart here "
+                                  "(dependency-free SVG, embeddable in the HTML report)."),
+    replicates: int = typer.Option(400, "--replicates",
+                                   help="Bootstrap resamples behind the confidence interval."),
+    as_json: bool = typer.Option(False, "--json"),
+):
+    """Map writing style as a vector of named, interpretable axes. [bold]No LLM required.[/bold]
+
+    Where [green]stats[/green] answers "how close is this to that corpus" with a single
+    number, this answers [bold]where it sits and on which axes[/bold] — sentence length,
+    subordination, nominalisation, punctuation variety, formality and so on. Coordinates
+    are z-scored against the corpus population, so +1.4 means "1.4 standard deviations
+    more than typical prose here" rather than an uncalibrated score.
+
+    Reports:
+      [bold]effective dimensionality[/bold]  how many INDEPENDENT axes voice really has.
+                                 The named axes are correlated — long sentences carry
+                                 more commas — so the labels overstate it.
+      [bold]group coordinates[/bold]         where each author or register sits.
+
+    Examples:
+      [green]revoice space bench-corpus[/green]
+      [green]revoice space bench-corpus -c bench-corpus-registers[/green]
+      [green]revoice space bench-corpus -t draft.md --against twain[/green]
+    """
+    from collections import defaultdict
+
+    from revoice.voicemetric.bench import load_corpus
+    from revoice.voicemetric.space import (
+        AXES,
+        AXIS_NAMES,
+        Population,
+        VoiceRegion,
+        effective_dimensionality,
+    )
+
+    docs = list(load_corpus(corpus))
+    tag = {id(d): d.author for d in docs}
+    if compare:
+        extra = list(load_corpus(compare))
+        for d in extra:
+            tag[id(d)] = f"[{d.author}]"   # bracketed so the second corpus stays legible
+        docs += extra
+    if not docs:
+        typer.secho(f"no documents found under {corpus}", fg="red")
+        raise typer.Exit(1)
+
+    pop = Population.fit([d.text for d in docs])
+    groups: dict[str, list[str]] = defaultdict(list)
+    for d in docs:
+        groups[tag[id(d)]].append(d.text)
+    regions = {k: VoiceRegion.fit(k, v, pop) for k, v in groups.items() if len(v) >= 3}
+
+    if text:
+        z = pop.standardize(text.read_text())
+        result = {"coordinates": {a: round(z[a], 2) for a in AXIS_NAMES}}
+        if against:
+            if against not in regions:
+                typer.secho(f"unknown group '{against}' (have: {', '.join(sorted(regions))})",
+                            fg="red")
+                raise typer.Exit(1)
+            r = regions[against]
+            result["against"] = against
+            result["distance"] = round(r.distance(z), 3)
+            result["deviations"] = [[a, round(v, 2)] for a, v in r.deviations(z)]
+        if against:
+            from revoice.voicemetric.space import similarity_report
+
+            sim = similarity_report(text.read_text(), regions[against], pop,
+                                    replicates=replicates)
+            result["similarity"] = sim
+            if svg:
+                from revoice.voicemetric import chart as voicechart
+
+                svg.write_text(voicechart.render(
+                    sim, title=f"{text.name}  vs  voice \u201c{against}\u201d",
+                    subtitle=f"{sim['words']} words \u00b7 {sim['windows']} windows \u00b7 "
+                             f"{sim['confidence']:.0%} bootstrap interval"))
+        elif svg:
+            typer.secho("--svg needs --against: a chart is a comparison to something", fg="red")
+            raise typer.Exit(1)
+
+        if as_json:
+            typer.echo(json.dumps(result, indent=2))
+            return
+        typer.secho(f"{text} — coordinates (z vs a {pop.n}-document population)", bold=True)
+        meaning = {a.name: (a.low, a.high) for a in AXES}
+        for a, v in sorted(z.items(), key=lambda kv: -abs(kv[1]))[:top]:
+            typer.echo(f"  {a:<24}{v:>+7.2f}   {meaning[a][1] if v > 0 else meaning[a][0]}")
+        if against:
+            sim = result["similarity"]
+            typer.echo("")
+            band = (f"  [{sim['low']:.1f}\u2013{sim['high']:.1f}] at {sim['confidence']:.0%}"
+                    if sim["interval_reliable"] else "  (too short for an interval)")
+            typer.secho(f"similarity to '{against}': {sim['overall']:.1f}{band}", bold=True)
+            if not sim["interval_reliable"]:
+                typer.secho("  under 3 windows there is nothing to resample \u2014 treat this "
+                            "as an impression", fg="yellow")
+            typer.echo(f"  distance {result['distance']:.2f} \u00b7 largest differences:")
+            for a, v in result["deviations"][:top]:
+                d = sim["axes"][a]
+                typer.echo(f"    {a:<24}{v:>+7.2f}   sim {d['similarity']:.2f}")
+            if svg:
+                typer.secho(f"  chart: {svg}", fg="green")
+        return
+
+    samples = [pop.standardize(t) for v in groups.values() for t in v]
+    ed = effective_dimensionality(samples)
+    report = {"population": pop.n, "axes": list(AXIS_NAMES), "dimensionality": ed,
+              "groups": {k: {a: round(v, 2) for a, v in r.centroid.items()}
+                         for k, r in sorted(regions.items())}}
+    if as_json:
+        typer.echo(json.dumps(report, indent=2))
+        return
+
+    typer.secho(f"VOICE SPACE — {len(AXIS_NAMES)} axes, {pop.n} documents, "
+                f"{len(regions)} groups", bold=True)
+    typer.echo("")
+    typer.echo(f"effective dimensionality: {ed['effective']} of {ed['axes']} named axes "
+               f"(top factor {ed['top_share']:.0%} of variance)")
+    typer.echo("  the axes are correlated, so the labels overstate how many independent")
+    typer.echo("  things voice actually is.")
+    typer.echo("")
+    typer.echo("GROUP COORDINATES (z; axes where some group exceeds 0.5 sd)")
+    strong = [a for a in AXIS_NAMES
+              if max(abs(r.centroid[a]) for r in regions.values()) >= 0.5][:top]
+    typer.echo("  " + "group".ljust(26) + "".join(f"{a[:9]:>10}" for a in strong))
+    typer.echo("  " + "-" * (26 + 10 * len(strong)))
+    for name, r in sorted(regions.items(),
+                          key=lambda kv: -sum(abs(v) for v in kv[1].centroid.values())):
+        typer.echo("  " + name[:25].ljust(26)
+                   + "".join(f"{r.centroid[a]:>10.2f}" for a in strong))
 
 
 def _bar(v: float, width: int = 24) -> str:
@@ -485,7 +666,12 @@ def stats(
       [bold]rhythm[/bold]   sentence-length histogram similarity
       [bold]vocab[/bold]    tf-idf cosine vs the register's corpus centroid
       [bold]punct[/bold]    punctuation-rate similarity
-      [bold]shape[/bold]    scalar-feature similarity (word length, TTR, adverbs, passives, readability…)
+      [bold]fwbigram[/bold] function-word bigrams — content-free joinery habits
+      [bold]opener[/bold]   how sentences are started (article / pronoun / conjunction / …)
+      [bold]syntax[/bold]   subordination, nominalization, passives, -ly adverbs
+      [bold]structure[/bold] paragraph shape: lengths and sentences-per-paragraph
+      [bold]richness[/bold] Yule's K, MTLD, word length, readability (all length-stable)
+      [bold]vocab[/bold]    tf-idf overlap — TOPIC, not voice; weighted 0 in the composite
 
     The composite (0-100) is calibrated per voice: `learn` reports the corpus's
     self-scores — compare against those, not against 100.
@@ -530,9 +716,8 @@ def stats(
                 cal_s = f"   (corpus self-score {cal['self_mean']}±{cal['self_std']})" if cal else ""
                 typer.echo(f" {mark} {reg:14s} {r['composite']:5.1f}/100{cal_s}")
                 c = r["components"]
-                typer.echo(f"     delta {c['delta']:.2f} (raw {r['burrows_delta']})  ngram {c['ngram']:.2f}  "
-                           f"rhythm {c['rhythm']:.2f}  vocab {c['vocab']:.2f}  "
-                           f"punct {c['punct']:.2f}  shape {c['shape']:.2f}")
+                typer.echo(f"     delta {c['delta']:.2f} (raw {r['burrows_delta']})  "
+                           + "  ".join(f"{k} {v:.2f}" for k, v in c.items() if k != "delta"))
             if not m["results"][m["best_register"]].get("reliable", True):
                 typer.secho("note: <150 words — scores are noisy at this length", fg="yellow")
         return
@@ -548,7 +733,7 @@ def stats(
 
 
 def _print_fingerprint(input_file: Path, fp: dict):
-    from revoice.core.stylometry import SENT_HIST_BINS
+    from revoice.voicemetric.features import SENT_HIST_BINS
 
     typer.secho(f"{input_file}", bold=True)
     typer.echo(f"  {fp['words']} words · {fp['sentences']} sentences · "
@@ -668,7 +853,7 @@ def run(
         typer.echo(out_text)
         return
     if as_json:
-        from revoice.core.stylometry import fingerprint
+        from revoice.voicemetric.features import fingerprint
 
         record = {
             "voice": voice,

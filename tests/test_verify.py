@@ -11,13 +11,14 @@ import random
 
 import pytest
 
-from revoice.core.verify import (
+from revoice.voicemetric.verify import (
     auc,
     calibrate_llr,
     cllr,
     cllr_report,
     eer,
     fit_logistic,
+    fit_weights,
     min_cllr,
     pav,
     tpr_at_fpr,
@@ -211,3 +212,52 @@ def test_eer_is_between_zero_and_one_across_random_inputs():
         t = [rng.gauss(1, 1) for _ in range(rng.randint(1, 8))]
         n = [rng.gauss(0, 1) for _ in range(rng.randint(1, 8))]
         assert 0.0 <= eer(t, n) <= 1.0
+
+
+# ---------- multivariate weight fitting ----------
+
+
+def test_fit_weights_finds_the_only_useful_dimension():
+    rng = random.Random(3)
+    tar = [[1.0 + rng.gauss(0, 0.1), rng.gauss(0, 1)] for _ in range(60)]
+    non = [[0.0 + rng.gauss(0, 0.1), rng.gauss(0, 1)] for _ in range(60)]
+    w = fit_weights(tar, non)
+    assert w[0] > 0.9 and w[1] < 0.1
+    assert sum(w) == pytest.approx(1.0)
+
+
+def test_fit_weights_clips_anti_predictive_dimensions_to_zero():
+    """A component that predicts backwards is noise, not a term to subtract.
+
+    Keeping the sign would fit one corpus's quirk; every component here is built so
+    that higher means more similar, so a negative weight is always a bug not a signal.
+    """
+    rng = random.Random(4)
+    tar = [[1.0 + rng.gauss(0, 0.1), 0.0] for _ in range(40)]
+    non = [[0.0 + rng.gauss(0, 0.1), 1.0] for _ in range(40)]
+    w = fit_weights(tar, non)
+    assert all(x >= 0.0 for x in w)
+    assert w[0] > w[1]
+
+
+def test_fit_weights_empty_input():
+    assert fit_weights([], []) == []
+    assert fit_weights([[1.0]], []) == []
+
+
+def test_fit_weights_on_pure_noise_stays_normalised():
+    rng = random.Random(5)
+    tar = [[rng.gauss(0, 1), rng.gauss(0, 1)] for _ in range(40)]
+    non = [[rng.gauss(0, 1), rng.gauss(0, 1)] for _ in range(40)]
+    w = fit_weights(tar, non)
+    assert sum(w) == pytest.approx(1.0)
+    assert all(x >= 0.0 for x in w)
+
+
+def test_fit_weights_degenerate_column_does_not_divide_by_zero():
+    # second column is constant -> zero variance -> must not blow up
+    tar = [[1.0, 7.0] for _ in range(10)]
+    non = [[0.0, 7.0] for _ in range(10)]
+    w = fit_weights(tar, non)
+    assert all(math.isfinite(x) for x in w)
+    assert sum(w) == pytest.approx(1.0)

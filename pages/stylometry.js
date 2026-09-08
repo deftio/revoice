@@ -50,9 +50,21 @@ function score(fp, base){
   var ps=[], p; for(p in base.punct){ m=base.punct[p][0]; sd=base.punct[p][1];
     ps.push(Math.exp(-Math.abs((fp.punct[p]||0)-m)/Math.max(sd,0.05))); }
   var punct = ps.reduce(function(a,b){return a+b;},0)/ps.length;
-  var composite = 100*(0.3*deltaSim + 0.3*ngram + 0.2*rhythm + 0.2*punct);
+  /* Weights chosen by `revoice bench`, not by taste. Under a topic-controlled
+     protocol on the bundled corpora: this blend scores macro AUC 0.687 / EER 0.367,
+     against 0.641 / 0.401 for the previous even-handed 0.3/0.3/0.2/0.2. Character
+     n-grams carry nearly all of the real signal; the other three sit close to chance
+     individually and are kept at low weight because they make the component
+     breakdown diagnostic, not because they discriminate. */
+  var composite = 100*(0.2*deltaSim + 0.6*ngram + 0.1*rhythm + 0.1*punct);
+  // rel: composite as a percentage of the reference's own self-score. Readable,
+  // but it saturates — a ratio of two numbers that both sit near 55 amplifies noise.
   var rel = base.self ? Math.min(100*composite/base.self[0], 115) : composite;
-  return { composite: composite, rel: rel, delta: delta,
+  // z: distance from the reference's own variation band, in standard deviations.
+  // This is the honest one: 0 means "as typical of the reference as the reference's
+  // own passages are", negative means further away, and it does not saturate.
+  var z = base.self ? (composite - base.self[0]) / Math.max(base.self[1], 1.0) : 0;
+  return { composite: composite, rel: rel, z: z, delta: delta,
            parts:{delta:deltaSim, ngram:ngram, rhythm:rhythm, punct:punct} };
 }
 
@@ -78,10 +90,10 @@ function meanStd(xs){
   return [m, Math.sqrt(v)];
 }
 
-function buildBaseline(text){
-  var wins = textWindows(text);
-  var fps = wins.map(fingerprint);
-  var base = { function_words:{}, sent_len_hist:[], punct:{}, char_ngrams:{}, windows:wins.length };
+/* Aggregate a baseline from already-computed window fingerprints. Split out so
+   leave-one-out calibration can rebuild cheaply without re-fingerprinting. */
+function baselineFromFps(fps){
+  var base = { function_words:{}, sent_len_hist:[], punct:{}, char_ngrams:{}, word_bigrams:{} };
   FW.forEach(function(w){
     var ms = meanStd(fps.map(function(fp){return fp.fw[w]||0;}));
     base.function_words[w] = [ms[0], Math.max(ms[1], 1e-6)];
@@ -95,15 +107,39 @@ function buildBaseline(text){
   });
   var cent = {};
   fps.forEach(function(fp){ var k; for(k in fp.ngrams){ cent[k]=(cent[k]||0)+fp.ngrams[k]/fps.length; } });
-  var top = Object.keys(cent).sort(function(a,b){return cent[b]-cent[a];}).slice(0,400);
-  top.forEach(function(k){ base.char_ngrams[k]=cent[k]; });
+  Object.keys(cent).sort(function(a,b){return cent[b]-cent[a];}).slice(0,400)
+    .forEach(function(k){ base.char_ngrams[k]=cent[k]; });
   var bcent = {};
   fps.forEach(function(fp){ var k; for(k in fp.bigrams){ bcent[k]=(bcent[k]||0)+fp.bigrams[k]/fps.length; } });
-  base.word_bigrams = {};
   Object.keys(bcent).sort(function(a,b){return bcent[b]-bcent[a];}).slice(0,300)
     .forEach(function(k){ base.word_bigrams[k]=bcent[k]; });
-  // self-calibration: each window scored against the baseline it helped build
-  var selfs = wins.map(function(w){ return score(fingerprint(w), base).composite; });
+  return base;
+}
+
+var LOO_MAX = 8;   // cap the leave-one-out passes; 8 is plenty for a mean+-std
+
+function buildBaseline(text){
+  var wins = textWindows(text);
+  var fps = wins.map(fingerprint);
+  var base = baselineFromFps(fps);
+  base.windows = wins.length;
+
+  /* Self-calibration, LEAVE-ONE-OUT. Scoring a window against a baseline it
+     helped build is contaminated — the window pulls the mean toward itself, so
+     the band comes out too tight and too high, and every candidate then looks
+     worse than it is. Hold the window out, rebuild, then score it. */
+  var step = Math.max(1, Math.floor(fps.length / LOO_MAX));
+  var selfs = [], i;
+  for(i = 0; i < fps.length && selfs.length < LOO_MAX; i += step){
+    var rest = fps.filter(function(_, j){ return j !== i; });
+    if(rest.length < 2) continue;
+    selfs.push(score(fps[i], baselineFromFps(rest)).composite);
+  }
+  base.looSamples = selfs.length;
+  if(!selfs.length){                       // 1-2 windows: nothing to hold out
+    selfs = fps.map(function(fp){ return score(fp, base).composite; });
+    base.contaminated = true;              // caller should warn
+  }
   var ms = meanStd(selfs);
   base.self = [ms[0], Math.max(ms[1], 1.0)];
   return base;

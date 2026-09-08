@@ -1,0 +1,26 @@
+{
+ "in_corpus_twain": {
+  "label": "Twain — in the corpus",
+  "kind": "corpus",
+  "note": "This exact text helped build the Twain baseline. Expect a high score: it is memorised, not recognised.",
+  "text": "When I was well grown, at last, I was sold and taken away, and I never saw her again. She was broken-hearted, and so was I, and we cried; but she comforted me as well as she could, and said we were sent into this world for a wise and good purpose, and must do our duties without repining, take our life as we might find it, live it for the best good of others, and never mind about the results; they were not our affair. She said men who did like this would have a noble and beautiful reward by and by in another world, and although we animals would not go there, to do well and right without reward would give to our brief lives a worthiness and dignity which in itself would be a reward. She had gathered these things from time to time when she had gone to the Sunday-school with the children, and had laid them up in her memory more carefully than she had done with those other words and phrases; and she had studied them deeply, for her good and ours."
+ },
+ "in_corpus_darwin": {
+  "label": "Darwin — in the corpus",
+  "kind": "corpus",
+  "note": "Also training data, from On the Origin of Species.",
+  "text": "When on board H.M.S. Beagle, as naturalist, I was much struck with certain facts in the distribution of the organic beings inhabiting South America, and in the geological relations of the present to the past inhabitants of that continent. These facts, as will be seen in the latter chapters of this volume, seemed to throw some light on the origin of species—that mystery of mysteries, as it has been called by one of our greatest philosophers. On my return home, it occurred to me, in 1837, that something might perhaps be made out on this question by patiently accumulating and reflecting on all sorts of facts which could possibly have any bearing on it. After five years’ work I allowed myself to speculate on the subject, and drew up some short notes; these I enlarged in 1844 into a sketch of the conclusions, which then seemed to me probable: from that period to the present day I have steadily pursued the same object."
+ },
+ "held_out_twain": {
+  "label": "Twain — held out",
+  "kind": "heldout",
+  "note": "Real Twain the baselines have never seen (In Defence of Harriet Shelley, 1894). This is the honest test — watch the score fall and the margin narrow.",
+  "text": "This Shelley biography is a literary cake-walk. The ordinary forms of speech are absent from it. All the pages, all the paragraphs, walk by sedately, elegantly, not to say mincingly, in their Sunday-best, shiny and sleek, perfumed, and with boutonnieres in their button-holes; it is rare to find even a chance sentence that has forgotten to dress. If the book wishes to tell us that Mary Godwin, child of sixteen, had known afflictions, the fact saunters forth in this nobby outfit: “Mary was herself not unlearned in the lore of pain”--meaning by that that she had not always traveled on asphalt; or, as some authorities would frame it, that she had “been there herself,” a form which, while preferable to the book's form, is still not to be recommended."
+ },
+ "ai_slop": {
+  "label": "AI-flavored",
+  "kind": "foreign",
+  "note": "Machine-register prose. Should sit below every voice.",
+  "text": "In today's fast-paced world, it's important to note that effective writing serves as a testament to clear thinking. Moreover, leveraging robust and scalable communication strategies ensures seamless alignment across stakeholders and unlocks the full potential of any organization. It's worth noting that comprehensive approaches to documentation play a crucial role in navigating the complexities of the modern workplace. Furthermore, by diving deep into best practices, teams can elevate their deliverables and streamline their workflows. Ultimately, this isn't just about writing — it's about empowering seamless collaboration across the ever-evolving landscape of knowledge work. In conclusion, robust communication remains a game-changer for organizations seeking to deliver value at scale."
+ }
+}

@@ -8,11 +8,15 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
+from revoice.core.metrics import COMPONENTS as COMPONENT_ORDER
 from revoice.core.segments import analyze_blend
-from revoice.core.stylometry import SENT_HIST_BINS, fingerprint
 from revoice.core.voicepack import VoicePack
+from revoice.voicemetric.features import SENT_HIST_BINS, fingerprint
 
 BAR_W = 24
+# `delta` is rendered with its raw Burrows value alongside, so the generic
+# component columns cover everything else.
+_REST = [c for c in COMPONENT_ORDER if c != "delta"]
 
 
 def build_report(text: str, source: str = "", pack: VoicePack | None = None,
@@ -74,15 +78,16 @@ def render_md(rep: dict) -> str:
     if "match" in rep:
         m = rep["match"]
         L += [f"## Voice match — `{rep['voice']}`", "",
-              "| register | composite | corpus self-score | delta (raw) | ngram | rhythm | vocab | punct | shape |",
-              "|---|---|---|---|---|---|---|---|---|"]
+              "| register | composite | corpus self-score | delta (raw) | "
+              + " | ".join(_REST) + " |",
+              "|" + "---|" * (4 + len(_REST))]
         for reg, r in sorted(m["results"].items(), key=lambda kv: -kv[1]["composite"]):
             cal = r.get("calibration", {})
             cal_s = f"{cal.get('self_mean', '—')} ± {cal.get('self_std', '—')}" if cal else "—"
             co = r["components"]
             mark = "**→** " if reg == m["best_register"] else ""
             L.append(f"| {mark}{reg} | {r['composite']} | {cal_s} | {co['delta']} ({r['burrows_delta']}) "
-                     f"| {co['ngram']} | {co['rhythm']} | {co['vocab']} | {co['punct']} | {co['shape']} |")
+                     + "| " + " | ".join(str(co.get(k, "")) for k in _REST) + " |")
         L.append("")
         if not m["results"][m["best_register"]].get("reliable", True):
             L.append("> note: <150 words — scores are noisy at this length")
@@ -122,12 +127,12 @@ def render_html(rep: dict) -> str:
             co = r["components"]
             star = "→ " if reg == m["best_register"] else ""
             body += (f"<tr><td>{star}{reg}</td><td><b>{r['composite']}</b></td><td>{cal_s}</td>"
-                     f"<td>{co['delta']} ({r['burrows_delta']})</td><td>{co['ngram']}</td>"
-                     f"<td>{co['rhythm']}</td><td>{co['vocab']}</td><td>{co['punct']}</td><td>{co['shape']}</td></tr>")
+                     f"<td>{co['delta']} ({r['burrows_delta']})</td>"
+                     + "".join(f"<td>{co.get(k, '')}</td>" for k in _REST) + "</tr>")
         match_html = f"""
   <h2>Voice match — {rep['voice']}</h2>
   <table class="bw-table"><thead><tr><th>register</th><th>composite</th><th>self-score</th>
-  <th>delta</th><th>ngram</th><th>rhythm</th><th>vocab</th><th>punct</th><th>shape</th></tr></thead>
+  <th>delta</th>""" + "".join(f"<th>{k}</th>" for k in _REST) + """</tr></thead>
   <tbody>{body}</tbody></table>"""
 
     return f"""<!DOCTYPE html>

@@ -1,6 +1,6 @@
 [project]
 name = "revoice"
-version = "0.1.1"
+version = "0.1.7"
 description = "Rewrite documents in your own voice. Register transfer within one author, structure preserved."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -33,7 +33,8 @@ build-backend = "setuptools.build_meta"
 include = ["revoice*"]
 
 [tool.setuptools.package-data]
-revoice = ["static/*.html", "rubric/README.md", "rubric/examples/*.yaml"]
+revoice = ["static/*.html", "rubric/README.md", "rubric/examples/*.yaml",
+           "voicemetric/README.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

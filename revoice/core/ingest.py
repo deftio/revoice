@@ -9,7 +9,15 @@ SKIP_NAMES = {".DS_Store"}
 
 
 def extract_text(path: Path) -> str | None:
-    """Return document text, or None if unsupported."""
+    """Return document text, or None if unsupported or unreadable.
+
+    A missing file is None, not an exception: the corpus index is a cache keyed by
+    path, so a document deleted between `learn` runs will still be listed. Callers
+    treat None as "skip this entry", which is the behaviour they already have for
+    unsupported extensions.
+    """
+    if not path.is_file():
+        return None
     ext = path.suffix.lower()
     if ext in TEXT_EXTS:
         return path.read_text(errors="replace")

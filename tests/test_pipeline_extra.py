@@ -29,16 +29,55 @@ def test_bad_register(learned_pack, stub):
         revoice_document("hello there", learned_pack, stub, register="nope")
 
 
-def test_on_target_pass_and_short_pass(learned_pack, stub):
+def test_on_target_span_passes_untouched(learned_pack, stub):
+    """Minimal-touch: a representative span of the author's own corpus is not rewritten.
+
+    The threshold comes from the calibration band for a span of this LENGTH, so the
+    span has to be long enough to attribute — hence a real paragraph rather than a
+    single sentence (see test_short_span_is_judged_against_its_own_band).
+    """
     reg = "professional"
-    # >=25-word span identical to corpus -> attributed on-target, untouched
+    corpus_para = (learned_pack.training_dir / "doc0.md").read_text().strip()
     msgs = []
-    out, rep = revoice_document(TRAIN.format(i=0), learned_pack, stub, register=reg,
+    out, rep = revoice_document(corpus_para, learned_pack, stub, register=reg,
                                 progress=lambda sid, m: msgs.append(m))
     e = rep["spans"][0]
-    assert e["status"] == "unchanged" and "attribution_score" in e
-    assert out == TRAIN.format(i=0)
+    assert e["status"] == "unchanged"
+    assert "attribution_score" in e and "attribution_floor" in e
+    assert e["attribution_score"] >= e["attribution_floor"]
+    assert out == corpus_para
     assert any("untouched" in m for m in msgs)
+
+
+def test_short_span_is_judged_against_its_own_band(learned_pack, stub):
+    """A 25-40 word span is compared to the 25-40 word band, not the document band.
+
+    This is the units fix: document-length scores run far above span-length ones, so
+    judging a paragraph against a document band rewrote most of the author's own prose.
+    """
+    reg = "professional"
+    _, rep = revoice_document(TRAIN.format(i=0), learned_pack, stub, register=reg)
+    e = rep["spans"][0]
+    assert "attribution_floor" in e
+    # the band for a ~30-word span must sit well below the whole-document self-score
+    from revoice.core.metrics import load_calibration
+
+    calib = load_calibration(learned_pack)
+    assert e["attribution_floor"] < calib[reg]["self_mean"]
+
+
+def test_missing_span_calibration_passes_through(learned_pack, stub, monkeypatch):
+    """With no span band we decline to judge rather than reuse the document band.
+
+    Passing rough text through is the cheap error; rewriting the author's own text is
+    the expensive one, so the fallback errs toward leaving it alone.
+    """
+    monkeypatch.setattr("revoice.core.pipeline.span_floor", lambda *a, **k: None)
+    corpus_para = (learned_pack.training_dir / "doc0.md").read_text().strip()
+    _, rep = revoice_document(corpus_para, learned_pack, stub, register="professional")
+    e = rep["spans"][0]
+    assert e["attribution"] == "no-span-calibration"
+    assert e["status"] == "unchanged"
 
 
 def test_strength_zero(learned_pack, stub):

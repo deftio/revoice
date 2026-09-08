@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 
 from revoice.core.segments import analyze_blend, classify_segment
-from revoice.core.stylometry import fingerprint, tokenize
+from revoice.voicemetric.features import fingerprint, tokenize
 
 # ---- deterministic detectors ----
 
@@ -56,14 +56,11 @@ def _doc_kind(blend: dict, fp: dict, text: str) -> str:
 
 def _segments_plan(text: str, pack=None, target_register: str | None = None) -> list[dict]:
     """Per-segment (blank-line paragraphs grouped by type) treatment decisions."""
-    from revoice.core.metrics import load_baselines, load_calibration, score_text
+    from revoice.core.metrics import load_baselines, load_calibration, score_text, span_floor
 
     baselines = load_baselines(pack) if pack else {}
     calib = load_calibration(pack) if pack else {}
     baseline = baselines.get(target_register) if target_register else None
-    floor = None
-    if baseline and (band := calib.get(target_register)):
-        floor = band.get("self_mean", 70) - band.get("self_std", 10)
 
     out = []
     pos = 0
@@ -88,11 +85,16 @@ def _segments_plan(text: str, pack=None, target_register: str | None = None) -> 
             seg["treatment"] = "cleanup-only"
         else:
             seg["treatment"] = "revoice"
-            if baseline and len(tokenize(para)[0]) >= 25:
+            n_words = len(tokenize(para)[0])
+            if baseline and n_words >= 25:
                 comp = score_text(para, baseline)["composite"]
                 seg["register_score"] = comp
-                if floor is not None and comp >= floor:
-                    seg["treatment"] = "pass-through (on-target)"
+                # length-matched band, same as pipeline attribution
+                floor = span_floor(calib, target_register, n_words)
+                if floor is not None:
+                    seg["register_floor"] = round(floor, 1)
+                    if comp >= floor:
+                        seg["treatment"] = "pass-through (on-target)"
         if cautions:
             seg["cautions"] = cautions
         out.append(seg)

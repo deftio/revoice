@@ -55,9 +55,14 @@ import statistics
 from dataclasses import dataclass
 from pathlib import Path
 
-from revoice.core.ingest import extract_text
-from revoice.core.metrics import WEIGHTS, baseline_from_texts, score_text
-from revoice.core.verify import auc, cllr_report, eer, tpr_at_fpr
+from revoice.voicemetric.baseline import (
+    COMPONENTS,
+    VOICE_COMPONENTS,
+    WEIGHTS,
+    baseline_from_texts,
+    score_text,
+)
+from revoice.voicemetric.verify import auc, cllr_report, eer, fit_weights, tpr_at_fpr
 
 # Query lengths in words. The first three bracket revoice's real span sizes; the last
 # three reach up toward the regime classical stylometry was validated in.
@@ -66,8 +71,6 @@ DEFAULT_LENGTHS = (50, 100, 200, 400, 800, 1600)
 DEFAULT_QUERIES_PER_CELL = 40
 DEFAULT_SEED = 17
 DEFAULT_MAX_FPR = 0.05
-
-COMPONENTS = ("delta", "ngram", "rhythm", "vocab", "punct", "shape")
 
 # `<register>-<work>-<part>` — the convention both bundled example packs follow
 # (fiction-adams-diary-a-01.md, science-origin-4.md). Files that do not match still
@@ -99,11 +102,38 @@ def parse_name(stem: str) -> tuple[str, str]:
     return m.group("register"), m.group("work")
 
 
-def load_corpus(root: Path) -> list[Doc]:
+def read_text_file(path: Path) -> str | None:
+    """Default reader: plain text, and None for anything that is not.
+
+    Binary files are rejected by content — a NUL byte, or decoding that needs too many
+    replacement characters — rather than by extension. Sniffing content is the right
+    amount of knowledge for this layer: it keeps a stray image out of the corpus without
+    the measurement code learning what a .docx is. Callers wanting real document formats
+    pass their own `read` (revoice passes its `ingest.extract_text`).
+    """
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    if b"\x00" in raw[:4096]:
+        return None
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("utf-8", errors="replace")
+        # a pure ratio, with no absolute floor: an allowance of "up to N bad bytes"
+        # waves through a short binary stub, where N bad bytes are most of the file
+        bad = text.count("\ufffd") / max(len(text), 1)
+        return None if bad > 0.005 else text
+
+
+def load_corpus(root: Path, read=read_text_file) -> list[Doc]:
     """Load voice-pack-shaped directories: <root>/<author>/training-data/*.
 
     Deliberately the same layout as a voice pack, so `examples/voices` benches as-is
     and a purpose-built evaluation corpus (see docs/metrics.md §4.1) drops in beside it.
+
+    `read` is injected so this module never has to know about document formats.
     """
     docs: list[Doc] = []
     root = Path(root)
@@ -114,7 +144,7 @@ def load_corpus(root: Path) -> list[Doc]:
         for f in sorted(training.rglob("*")):
             if not f.is_file() or f.name.startswith("."):
                 continue
-            text = extract_text(f)
+            text = read(f)
             if not text or not text.strip():
                 continue
             register, work = parse_name(f.stem)
@@ -154,17 +184,24 @@ def _renormalized(drop: tuple[str, ...]) -> dict[str, float]:
     return {c: kept.get(c, 0.0) / total for c in COMPONENTS}
 
 
+def uniform(components=COMPONENTS) -> dict[str, float]:
+    """Equal weight over the named components, zero elsewhere."""
+    w = dict.fromkeys(COMPONENTS, 0.0)
+    for c in components:
+        w[c] = 1.0 / len(components)
+    return w
+
+
 def default_scorers() -> dict[str, dict[str, float]]:
     """The shipped composite, every component alone, and the ablations worth arguing about."""
     scorers = {"composite": dict(WEIGHTS)}
     for c in COMPONENTS:
         scorers[c] = _only(c)
+    scorers["equal-weight"] = uniform()
     scorers["no-vocab"] = _renormalized(("vocab",))
-    scorers["no-vocab-rhythm-shape"] = _renormalized(("vocab", "rhythm", "shape"))
-    scorers["delta+ngram"] = {"delta": 0.5, "ngram": 0.5, "rhythm": 0.0,
-                              "vocab": 0.0, "punct": 0.0, "shape": 0.0}
-    scorers["delta+ngram+punct"] = {"delta": 0.4, "ngram": 0.4, "rhythm": 0.0,
-                                    "vocab": 0.0, "punct": 0.2, "shape": 0.0}
+    # the content-independent families only — the hypothesis docs/metrics.md argues for
+    scorers["content-free"] = uniform(("delta", "fwbigram", "opener", "syntax", "punct"))
+    scorers["ngram+fwbigram"] = uniform(("ngram", "fwbigram"))
     return scorers
 
 
@@ -180,6 +217,7 @@ def combine(components: dict[str, float], weights: dict[str, float]) -> float:
 class Trial:
     ref_author: str
     ref_exclude: str      # the work (or doc path) held out of the reference
+    ref_register: str     # genre of the reference author — the grouping key for by_register
     query_author: str
     query_register: str
     length: int
@@ -208,8 +246,19 @@ def run_trials(
     seed: int = DEFAULT_SEED,
     level: str = "work",
     progress=None,
+    negatives: str = "any",
 ) -> list[Trial]:
-    """Build and score every trial. `level` is 'work' (topic-controlled) or 'doc' (leaky)."""
+    """Build and score every trial.
+
+    `level` is 'work' (topic-controlled) or 'doc' (leaky). `negatives` is 'any' — draw
+    different-author queries from the whole corpus — or 'same-register', which draws
+    them only from authors in the same genre.
+
+    On a multi-genre corpus 'any' is the easy setting and will flatter the measure:
+    most negative pairs then differ in genre as well as authorship, and separating a
+    cookery manual from an adventure novel is not authorship attribution.
+    'same-register' is the contrast that matters.
+    """
     rng = random.Random(seed)
     authors = sorted({d.author for d in docs})
     if len(authors) < 2:
@@ -220,9 +269,17 @@ def run_trials(
     key = (lambda d: d.work) if level == "work" else (lambda d: d.path)
     trials: list[Trial] = []
 
+    registers_of = {a: {d.register for d in docs if d.author == a} for a in authors}
+
     for author in authors:
         own = [d for d in docs if d.author == author]
-        others = [d for d in docs if d.author != author]
+        if negatives == "same-register":
+            others = [d for d in docs
+                      if d.author != author and (registers_of[d.author] & registers_of[author])]
+        else:
+            others = [d for d in docs if d.author != author]
+        if not others:
+            continue  # no same-genre rival to contrast against
         for exclude in sorted({key(d) for d in own}):
             ref_texts = _reference_texts(docs, author, exclude, level)
             if len(ref_texts) < 2:
@@ -246,6 +303,7 @@ def run_trials(
                             Trial(
                                 ref_author=author,
                                 ref_exclude=exclude,
+                                ref_register=held_out[0].register,
                                 query_author=doc.author,
                                 query_register=doc.register,
                                 length=length,
@@ -330,6 +388,63 @@ def evaluate(trials: list[Trial], scorers: dict[str, dict[str, float]] | None = 
         entry["pooled_length_mixed"] = _metrics(*_split(trials, weights), max_fpr)
         entry["auc"] = entry["macro"]["auc"]
         out["scorers"][name] = entry
+    return out
+
+
+def fit_scorer(trials: list[Trial], lengths=DEFAULT_LENGTHS) -> dict[str, float]:
+    """Fit component weights on these trials. Returns a weight dict summing to 1.
+
+    Fits over VOICE_COMPONENTS only — `vocab` is held out on purpose. It is the
+    strongest single component on every corpus we have and it is measuring subject
+    matter; an unconstrained fitter hands it half the weight and reports an AUC that
+    will not survive the author changing topic.
+
+    Fitting is done on standardized component vectors pooled across lengths, which is
+    fine here (unlike reporting) because we want one weighting that works everywhere
+    rather than a per-length answer.
+    """
+    tar = [[t.components.get(c, 0.0) for c in VOICE_COMPONENTS]
+           for t in trials if t.same and t.components and t.length in lengths]
+    non = [[t.components.get(c, 0.0) for c in VOICE_COMPONENTS]
+           for t in trials if not t.same and t.components and t.length in lengths]
+    w = fit_weights(tar, non)
+    if not w:
+        return dict(WEIGHTS)
+    fitted = dict.fromkeys(COMPONENTS, 0.0)
+    fitted.update(dict(zip(VOICE_COMPONENTS, w, strict=True)))
+    return fitted
+
+
+def split_trials(trials: list[Trial], fold: int = 2):
+    """Deterministic split for honest fit/evaluate separation: fit on one half of the
+    reference models, evaluate on the other. Splitting by REFERENCE rather than by
+    trial keeps a fitted weighting from being scored on the same baselines it saw."""
+    keys = sorted({(t.ref_author, t.ref_exclude) for t in trials})
+    held = {k for i, k in enumerate(keys) if i % fold == 0}
+    fit = [t for t in trials if (t.ref_author, t.ref_exclude) not in held]
+    ev = [t for t in trials if (t.ref_author, t.ref_exclude) in held]
+    return fit, ev
+
+
+def by_register(trials: list[Trial], weights: dict[str, float] | None = None,
+                max_fpr: float = DEFAULT_MAX_FPR) -> dict:
+    """Per-genre discrimination for one weighting.
+
+    Authorship is not equally hard everywhere: comic writers have loud personal voices,
+    while four Victorian naturalists writing scientific argument share a house style.
+    A single aggregate hides that, and the per-genre spread is the more useful answer
+    for anyone deciding whether the measure is good enough for THEIR kind of writing.
+    """
+    weights = weights or dict(WEIGHTS)
+    registers = sorted({t.ref_register for t in trials})
+    out = {}
+    for reg in registers:
+        subset = [t for t in trials if t.ref_register == reg]
+        target, nontarget = _split(subset, weights)
+        m = _metrics(target, nontarget, max_fpr)
+        out[reg] = {"auc": m["auc"], "eer": m["eer"], "tpr_at_fpr": m["tpr_at_fpr"],
+                    "n_same": m["n_same"], "n_different": m["n_different"],
+                    "authors": len({t.ref_author for t in subset})}
     return out
 
 
@@ -432,17 +547,37 @@ def verdict(result: dict, max_fpr: float = DEFAULT_MAX_FPR) -> list[str]:
 
 def bench(root: Path, lengths=DEFAULT_LENGTHS, queries_per_cell: int = DEFAULT_QUERIES_PER_CELL,
           seed: int = DEFAULT_SEED, max_fpr: float = DEFAULT_MAX_FPR,
-          skip_content_control: bool = False, progress=None) -> dict:
+          skip_content_control: bool = False, progress=None, fit: bool = False,
+          negatives: str = "any") -> dict:
     """Full bench run. Returns a JSON-serializable report."""
     docs = load_corpus(root)
     if not docs:
         raise RuntimeError(f"no documents found under {root} (expected <author>/training-data/*)")
 
-    trials = run_trials(docs, lengths, queries_per_cell, seed, "work", progress)
-    result = evaluate(trials, None, lengths, max_fpr)
+    trials = run_trials(docs, lengths, queries_per_cell, seed, "work", progress, negatives)
+    if not trials:
+        raise RuntimeError(
+            f"no trials built from {root} — need >=2 authors with >=2 works each"
+            + (" sharing a register (negatives='same-register')" if negatives == "same-register" else ""))
+    scorers = None
+    if fit:
+        # Fit on one half of the reference models and score on the other, so the
+        # reported AUC for "fitted" is not the AUC of a weighting that already saw
+        # these baselines. Anything else would be marking our own homework.
+        fit_half, _ = split_trials(trials)
+        fitted = fit_scorer(fit_half, lengths)
+        scorers = default_scorers()
+        scorers["fitted"] = fitted
+    result = evaluate(trials, scorers, lengths, max_fpr)
+    if fit:
+        _, eval_half = split_trials(trials)
+        held = evaluate(eval_half, {"fitted": scorers["fitted"]}, lengths, max_fpr)
+        result["fitted_weights"] = {k: round(v, 4) for k, v in scorers["fitted"].items()}
+        result["fitted_heldout"] = held["scorers"]["fitted"]["macro"]
     result["corpus"] = corpus_summary(docs)
     result["protocol"] = {
         "leave_one_out": "work",
+        "negatives": negatives,
         "lengths": list(lengths),
         "queries_per_cell": queries_per_cell,
         "seed": seed,
@@ -450,11 +585,12 @@ def bench(root: Path, lengths=DEFAULT_LENGTHS, queries_per_cell: int = DEFAULT_Q
     }
 
     if not skip_content_control:
-        leaky_trials = run_trials(docs, lengths, queries_per_cell, seed, "doc", progress)
+        leaky_trials = run_trials(docs, lengths, queries_per_cell, seed, "doc", progress, negatives)
         result["content_control"] = content_control(
             result, evaluate(leaky_trials, None, lengths, max_fpr)
         )
 
+    result["by_register"] = by_register(trials, scorers["fitted"] if fit else None, max_fpr)
     result["verdict"] = verdict(result, max_fpr)
     return result
 
@@ -481,6 +617,7 @@ def render(result: dict) -> str:
     p = result.get("protocol", {})
     lines.append("")
     lines.append(f"PROTOCOL  {p.get('leave_one_out')}-level leave-one-out · "
+                 f"{p.get('negatives', 'any')} negatives · "
                  f"{len(p.get('lengths', []))} lengths · {p.get('queries_per_cell')} queries/cell · "
                  f"seed {p.get('seed')}")
     lines.append(f"          {result['n_trials']:,} trials "
@@ -527,6 +664,30 @@ def render(result: dict) -> str:
         for name, v in ordered:
             lines.append("  " + name.ljust(24) + _fmt(v["auc_topic_controlled"], 12)
                          + _fmt(v["auc_topic_leaked"], 9) + _fmt(v["topic_contribution"], 13))
+
+    br = result.get("by_register")
+    if br and len(br) > 1:
+        lines.append("")
+        lines.append("BY GENRE — composite AUC within each group (same-genre rivals)")
+        lines.append("  " + "genre".ljust(14) + f"{'authors':>8}{'trials':>9}{'AUC':>8}{'EER':>8}{'tpr@fpr':>9}")
+        lines.append("  " + "-" * 56)
+        for reg, v in sorted(br.items(), key=lambda kv: -(kv[1]["auc"] if kv[1]["auc"] == kv[1]["auc"] else -1)):
+            lines.append("  " + reg.ljust(14) + f"{v['authors']:>8}"
+                         + f"{v['n_same'] + v['n_different']:>9}"
+                         + _fmt(v["auc"]) + _fmt(v["eer"]) + _fmt(v["tpr_at_fpr"], 9))
+
+    fw = result.get("fitted_weights")
+    if fw:
+        lines.append("")
+        lines.append("FITTED WEIGHTS (logistic, L2, fitted on half the reference models)")
+        ranked = sorted(fw.items(), key=lambda kv: -kv[1])
+        for name, weight in ranked:
+            bar = "█" * int(round(weight * 60))
+            lines.append(f"  {name.ljust(12)}{weight:>7.3f}  {bar}")
+        ho = result.get("fitted_heldout") or {}
+        if ho:
+            lines.append(f"  held-out macro AUC {ho.get('auc')}  EER {ho.get('eer')}  "
+                         f"cllr {ho.get('cllr')}")
 
     v = result.get("verdict") or []
     if v:

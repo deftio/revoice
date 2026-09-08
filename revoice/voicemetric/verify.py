@@ -227,6 +227,62 @@ def calibrate_llr(model: tuple[float, float, float, float], scores: list[float],
     return [a * ((s - mean) / std) + b - log_prior_odds for s in scores]
 
 
+def fit_weights(target_vectors: list[list[float]], nontarget_vectors: list[list[float]],
+                iters: int = 250, l2: float = 1.0) -> list[float]:
+    """Multivariate logistic fit: which components actually separate the classes?
+
+    Returns one non-negative weight per input dimension, normalised to sum to 1, so
+    the result drops straight into a weighted composite. Gradient ascent on the
+    penalised log-likelihood — deliberately plain arithmetic, because the whole point
+    of this module is that it has no dependencies.
+
+    Two deliberate choices:
+      * L2 penalty. With a handful of reference documents the components are highly
+        correlated and an unpenalised fit will hand one of them a huge weight and its
+        neighbour an offsetting negative one, which is unstable across seeds.
+      * Negative weights are clipped to zero. A component that is anti-predictive is
+        telling us it is noise, not that we should subtract it; keeping the sign would
+        fit the quirks of one corpus.
+    """
+    if not target_vectors or not nontarget_vectors:
+        return []
+    dim = len(target_vectors[0])
+    xs = target_vectors + nontarget_vectors
+    ys = [1.0] * len(target_vectors) + [0.0] * len(nontarget_vectors)
+
+    # standardize so no component dominates through scale alone
+    means, sds = [], []
+    for j in range(dim):
+        col = [x[j] for x in xs]
+        m = sum(col) / len(col)
+        v = sum((c - m) ** 2 for c in col) / len(col)
+        means.append(m)
+        sds.append(math.sqrt(v) or 1.0)
+    zs = [[(x[j] - means[j]) / sds[j] for j in range(dim)] for x in xs]
+
+    w = [0.0] * dim
+    b = 0.0
+    lr = 0.5 / max(len(zs), 1)
+    for _ in range(iters):
+        gw = [0.0] * dim
+        gb = 0.0
+        for z, y in zip(zs, ys, strict=True):
+            dot = b + sum(w[j] * z[j] for j in range(dim))
+            p = 1.0 / (1.0 + math.exp(-max(-30.0, min(30.0, dot))))
+            r = y - p
+            gb += r
+            for j in range(dim):
+                gw[j] += r * z[j]
+        for j in range(dim):
+            w[j] += lr * (gw[j] - l2 * w[j])
+        b += lr * gb
+
+    # undo standardization, clip, normalise
+    raw = [max(w[j] / sds[j], 0.0) for j in range(dim)]
+    total = sum(raw)
+    return [r / total for r in raw] if total else [1.0 / dim] * dim
+
+
 def cllr_report(target: list[float], nontarget: list[float], folds: int = 2) -> dict:
     """Full calibration report: cllr (cross-validated logistic), cllr_min (PAV), cllr_cal.
 

@@ -1,5 +1,323 @@
 # Changelog
 
+## 0.1.7 (unreleased)
+
+**Both engines are versioned, and revoice records which build produced a number.**
+
+### Added
+- `rubric.version()` / `voicemetric.version()`, plus `describe()` on both — a clean,
+  JSON-safe API surface for a caller to record alongside any result.
+- **`voicemetric.signature()`** — a short hash over everything that changes a score:
+  components, weights, axis names, span-calibration buckets. This is the part that
+  matters. The composite weights have been refitted three times, each refit silently
+  changing every score computed against an existing baseline, and **not one of them
+  moved a function signature**. A release number would have said nothing.
+- **`rubric.rubric_signature(rubrics)`** — the analogue for judging, where the numbers
+  come from the caller's YAML rather than the engine. Covers choice names, score
+  mappings, weights and reject thresholds; deliberately ignores descriptions, so
+  rewording one for clarity does not invalidate a run.
+- `judge_all` now returns `"engine"` with the version and spec signature, so a stored
+  judgment carries its own provenance.
+- `learn` stamps `voicemetric.describe()` into `params/baselines.json`,
+  `params/calibration.json` and the pack manifest; `metrics.engine_of(pack)` reads it
+  back. **`revoice status <voice>` warns when a pack was built under a different
+  signature** — its stored calibration bands are measuring something subtly different
+  from anything computed today. `revoice doctor` prints both engines up front.
+- `tests/test_engine_versions.py` — the contract for both engines, including that a
+  weight refit moves the signature, that cosmetic rubric edits do not, and that the
+  stale-pack warning actually fires.
+
+### Versions
+`rubric` **1.0.0** — the contract (model classifies, code computes) has not changed and
+is not expected to. `voicemetric` **0.4.0** — pre-1.0 on purpose: MINOR means *the
+numbers changed*, and they still do.
+
+### Documentation
+- Both packages' READMEs now cover install / build / test / versioning, and state
+  plainly what each is and is not good for. `voicemetric`'s records the measured
+  ceiling (AUC ≈ 0.69, by genre) rather than leaving a reader to assume more.
+
+### Fixed
+- `load_baselines` / `load_calibration` strip the `_engine` stamp, so no caller can
+  mistake it for a register. The stamp sits alongside the register keys rather than
+  nesting the data a level deeper, which keeps every existing reader working.
+- `cwd` / `learned_cwd` fixtures moved to `conftest.py` now that more than one test
+  module needs a working directory with a learned pack.
+
+## 0.1.6 (unreleased)
+
+**The voice-similarity engine becomes a standalone package.**
+
+### Changed
+- New package **`revoice/voicemetric/`** — sibling to `revoice/rubric/`, same division of
+  labour. 2,400 lines of measurement that imports **nothing from the rest of revoice**
+  and depends on **nothing outside the standard library**.
+
+  ```
+  features.py   deterministic stylometry
+  baseline.py   corpus baselines, composite score, span-length calibration
+  space.py      17 named axes, voice regions, bootstrap intervals, dimensionality
+  chart.py      the report as dependency-free SVG
+  verify.py     AUC, EER, PAV, Cllr, weight fitting
+  bench.py      authorship-verification harness
+  ```
+
+  Moved from `core/`: `stylometry.py`→`features.py`, `verify.py`, `bench.py`,
+  `voicespace.py`→`space.py`, `voicechart.py`→`chart.py`, and the generic half of
+  `metrics.py`→`baseline.py`.
+
+- **The two couplings that blocked this are inverted.** `metrics` no longer takes a
+  `VoicePack` (it takes texts; `calibration_from_texts` replaces the pack-aware
+  `build_calibration`), and `bench.load_corpus` takes an injected `read` callable
+  instead of importing revoice's `ingest`. `revoice/core/metrics.py` is now purely the
+  seam: read a pack's corpus, hand texts to the engine, write results back.
+
+- Every import site elsewhere in revoice was updated; nothing else changed behaviour.
+
+### Added
+- `revoice/voicemetric/README.md` — what it measures, what it is honestly good at
+  (register drift), and what it is not (an authorship test), with the measured ceiling.
+- `tests/test_package_boundaries.py` — enforces the boundary for **both** standalone
+  packages by parsing the AST, so an import added inside a function body is caught as
+  surely as one at the top of a file. Also checks each package ships a README, that
+  `__all__` fully resolves, and that no source under `voicemetric/` so much as mentions
+  `VoicePack`.
+- `voicemetric.bench.read_text_file` — the default reader rejects binary **by content**
+  (NUL bytes, or a decode needing >0.5% replacement characters) rather than by
+  extension. Sniffing content is the right amount of knowledge for this layer: it keeps
+  a stray image out of a corpus without the measurement code learning what a `.docx` is.
+
+### Why now
+Both `rubric` (how good is this writing?) and `voicemetric` (whose writing is this?)
+have to work before any revoice quality claim means anything. Making the boundary real
+now keeps them independently testable — and, if either is ever more useful outside
+revoice than in it, the lift is already done.
+
+## 0.1.5 (unreleased)
+
+**Similarity you can read and argue with: per-axis, with a confidence interval.**
+
+### Added
+- `voicespace.similarity_report()` — overall and per-axis similarity to a voice, each
+  with a **bootstrap confidence interval** over the document's own paragraph windows.
+  Answers "how much would this move on a different few pages of the same document",
+  which is the question a bare score silently skips. Under three windows it reports no
+  interval rather than inventing one.
+- `revoice/core/voicechart.py` + `revoice space --svg` — a dependency-free SVG report:
+  per-axis bars (length = size of difference, side = direction), whiskers for the
+  interval, numbers printed as well as drawn. Colours are CSS custom properties with
+  literal fallbacks, so one generator serves a standalone `.svg` and an inline embed in
+  a themed page.
+- `revoice space --text X --against Y` now prints the similarity, its interval, and the
+  axes that differ most — and warns explicitly when a text is too short to have an
+  interval at all.
+
+### Why it matters
+Against a Twain reference: held-out Twain **45.9 [31.9–49.1]**, Bret Harte
+**37.2 [25.2–45.9]**, a Federal Register rule **24.5 [18.7–29.8]**. The 8.7-point gap
+between the two authors reads as decisive; their intervals overlap across **14 points**,
+so the ordering is not evidence. The regulatory sample separates cleanly. Confident
+about register, weak about authorship — which is what AUC 0.69 looks like on one
+document, and invisible without the interval.
+
+### Fixed
+- `VoiceRegion.spread` now floors at 0.15 population standard deviations. A voice fitted
+  on near-identical reference texts previously got a spread near zero, so deviations
+  divided by it returned in the millions and every per-axis similarity underflowed to
+  exactly zero.
+
+## 0.1.4 (unreleased)
+
+**Voice becomes a vector with named axes, and the benchmark gains modern document types.**
+
+### Added — voice space
+- `revoice/core/voicespace.py` + **`revoice space`**: writing style as **17 named,
+  interpretable axes** (sentence length, subordination, nominalisation, punctuation
+  variety, formality, person, paragraph shape...) rather than a single similarity score.
+  Coordinates are z-scored against a reference population, so `+1.4 on subordination`
+  means "1.4 sd more subordinate than typical prose" — a claim a reader can check. A
+  voice is a *region* (centroid + spread); two voices compare directly without electing
+  one as the baseline; and a distance decomposes into *which axes differ and by how much*.
+- **It is more discriminative, not just more legible.** Same protocol as the scalar
+  benchmark (70 authors, work-level LOO, hard negatives): voice-space distance scores
+  **AUC 0.689–0.699 against 0.652** for the fitted nine-component scalar composite. The
+  best single interpretable axis (`readability`, 0.706) matches the whole composite.
+- **Effective dimensionality: ~7.8 of 17 axes** (top factor 28% of variance). The axes
+  are correlated, so the labels overstate how many independent things voice is — a useful
+  brake on feature-set sprawl — but no single "general style factor" dominates either.
+
+### Added — the register corpus
+- `scripts/fetch_register_corpus.py`: **140 documents across five modern document
+  types** — encyclopedic (Wikipedia, CC BY-SA), scientific articles (Europe PMC, CC BY),
+  regulatory notices (US Federal Register, PD), technical reports (NASA NTRS, PD) and
+  press releases (NASA, PD). Provenance and licence recorded per document.
+- Kept **separate from the authorship corpus on purpose**: these are institutional or
+  multi-author documents and cannot be authorship positives without lying about who
+  wrote them. They serve register measurement, which is revoice's other stated job.
+- On "marketing brief": no public-domain corpus of modern marketing copy exists.
+  Agency press releases are the closest honest analogue — institutional promotional
+  prose — and are labelled as such rather than dressed up.
+
+### What the register corpus shows
+- Modern functional registers occupy one corner of the voice space: long words, heavy
+  nominalisation, low readability, almost no first or second person.
+- **19th-century technical prose sits closer to comic writing (0.42) than to modern
+  technical reports (0.91).** The instructional register moved a long way in a century,
+  so the Gutenberg `technical` group is a poor proxy for how revoice's users write.
+- Adding these registers raises measured effective dimensionality 7.77 -> 8.2: modern
+  functional prose exercises axes 19th-century books leave flat.
+
+### Fixed
+- **The eigen-solver was wrong**, caught by a known-answer test. Naive power iteration
+  with deflation restarted from the same vector, which after deflation lies in the null
+  space — the identity matrix returned `[1, 0, 0, 0]` instead of `[1, 1, 1, 1]`. Fixed by
+  retaining eigenvectors and projecting them out, with basis-vector starts: a smooth
+  start like `sin(c + i*d)` spans only a two-parameter family and stalls after two
+  deflations.
+- One global length floor in the register fetcher silently reduced `technical_report`
+  to three documents (NASA abstracts run 400-1500 characters). Floors are now
+  per-register. A short register is honest; one that vanished to a constant is a bug.
+
+## 0.1.3 (unreleased)
+
+**A benchmark corpus big enough to trust, and the prior art we should have read first.**
+
+### Added
+- **The evaluation corpus grew from 8 authors to 70**: `scripts/fetch_bench_corpus.py`
+  now builds **1,594 samples across 70 authors and 11 genres** (~15 MB) from
+  public-domain Gutenberg texts — humor, science, technical, philosophy, history,
+  economics, fiction, adventure, essay, travel, children's. Within a genre the authors
+  share era and register, so telling them apart is authorship and nothing else.
+- **A `technical` group — instructional and product literature.** Manuals, trade
+  primers, field guides, clinical and cookery writing: Morgan's *Wireless Telegraph
+  Construction for Amateurs*, Hawkins' *Electrical Guide*, Hamilton's printing-trade
+  primers, Wheatley's *How to Make an Index*. This register is essentially absent from
+  the standard corpora (CCAT50, IMDb62, Blogs50 are modern short-form web and news) and
+  it is the one revoice's users actually write in.
+- `revoice bench --hard-negatives` — draw different-author trials only from the same
+  genre. On a multi-genre corpus the default mixes in easy cross-genre pairs, and
+  separating a cookery manual from an adventure novel is not authorship attribution.
+  Valla reports that hard-negative mining is what makes verification methods
+  competitive with attribution methods.
+- Per-genre breakdown in the bench report (`by_register`): authorship is not equally
+  hard everywhere, and the spread is more useful than one aggregate.
+- `tests/test_fetch_corpus.py` — the corpus builder's filtering logic, which is where a
+  mistake silently poisons every downstream number.
+
+### Changed
+- The corpus builder is **catalogue-driven, not API-driven**: one static ~20 MB CSV from
+  Gutenberg instead of 70 gutendex calls. Gutendex went fully unreachable mid-build;
+  70 authors is 70 chances to fail, an offline join has none.
+
+### Fixed — four corpus bugs, each of which looked like a metric failure
+- **Substring name matching.** "Whittier, John Greenleaf" matched *John Richard Green*:
+  58 works by the wrong man filed under one author label.
+- **Non-positional given names.** "Smith, George Adam" (the biblical scholar) was filed
+  as *Adam Smith* the economist, and "Bates, Walter" as *Henry Walter Bates*. Given
+  names are now matched positionally against the catalogue's own first given name.
+- **`\bautobiograph\b` never matches "Autobiography"** — there is no word boundary
+  before the "y" — so the compilation blocklist silently passed everything it was
+  written to exclude.
+- **Volumes counted as independent works.** *Complete Writings* Vols 1-3 were three
+  "works", which reinstated exactly the topic leak work-level leave-one-out exists to
+  remove.
+
+  Together these matter as much as any scoring change: the first naturalist build scored
+  AUC 0.543 and the second 0.592 — same metric, cleaner corpus.
+
+### Measured on the new corpus
+- **Composite AUC 0.652** with hard negatives across 70 authors / 11 genres (5,016
+  trials). Difficulty is strongly genre-dependent — humor 0.693, **technical 0.674**,
+  down to philosophy 0.553. The `technical` group has the best operating point of any
+  genre (0.296 TPR at 5% FPR), which is the good news: instructional and product prose
+  carries more personal surface habit than literary fiction, and it is the register
+  revoice's users actually write in.
+- **The 0.1.2 weights were overfitted and the bigger corpus caught it.** Fitted on four
+  humorists they scored 0.631 on the 70-author corpus — *below plain equal weighting at
+  0.648*. Refitted across all genres: `punct .332 · delta .318 · ngram .181 ·
+  richness .104 · structure .064`, the rest zero. `ngram` earns weight back once the
+  corpus is broad enough that it cannot memorise one genre's vocabulary. Fitting on one
+  genre buys performance there and loses it everywhere else.
+
+### Research (docs/metrics.md 2.2b)
+- **Valla** (Tyo, Dhingra & Lipton, IJCNLP-AACL 2023) is the closest prior art to
+  `revoice bench` — standardised splits, cross-topic/cross-genre challenge sets, and its
+  own Gutenberg dataset. Its finding that **a traditional n-gram model beats BERT on 5 of
+  7 attribution tasks** (76.5% vs 66.7%) makes the embedding tier less of a foregone
+  conclusion than the STEB rankings suggested, and its n-gram baseline is a
+  *discriminative per-author classifier* rather than a distance to a centroid — a
+  different shape from what revoice does, and now buildable given a background pool.
+- **General Imposters** (Koppel & Winter; Kestemont et al.; shipped in `stylo`) is the
+  most directly adoptable idea available: instead of "are these similar?", ask "are they
+  more similar to each other than to a pool of imposters, across many randomly impaired
+  feature spaces?" It yields a score in [0,1] with a real meaning and an explicit
+  "don't know" band — which is precisely the failure mode our raw similarity keeps
+  hitting — and it needs only the background pool the corpus builder now produces.
+
+## 0.1.2 (unreleased)
+
+**The metric was rebuilt against a corpus that can actually test it.** 0.1.1 shipped the
+bench; this release acts on what it said. Three of the four findings contradict what the
+bundled Twain/Darwin packs had suggested, which is the point of having built the harness.
+
+### Added
+- `scripts/fetch_bench_corpus.py` — assembles the topic-controlled evaluation corpus from
+  public-domain Gutenberg texts: four 19th-c American humorists (Twain, Harte, Ward, Nye)
+  and four naturalists (Darwin, Wallace, Huxley, Bates), three works each. Same era, same
+  genre within a group, so telling them apart is authorship and nothing else. Written to a
+  gitignored `bench-corpus/`; filters out compilations, correspondence and biographies,
+  whose prose is not reliably the named author's.
+- `revoice bench --fit` — fits component weights with a penalised multivariate logistic
+  model on half the reference models and reports a held-out score, so the weighting is
+  measured rather than argued about. `verify.fit_weights` is the (dependency-free) fitter.
+- Nine separately-ablatable score components in place of six, all content-independent
+  additions: function-word bigrams, sentence-opener class distribution, paragraph-shape
+  statistics (the structural Writeprints family, previously absent entirely), punctuation
+  ratios, contraction/hyphenation rates, parser-free syntactic proxies.
+- `metrics.VOICE_COMPONENTS` — the components eligible for an authorship score. `vocab`
+  is excluded **by construction**: measured, it is the best component on every corpus we
+  have, and that is exactly the problem.
+
+### Changed
+- **Default weights are now fitted, not hand-picked**: `punct .392 · delta .258 ·
+  syntax .197 · richness .069 · fwbigram .033 · opener .032 · structure .020`, with
+  `ngram` and `rhythm` at zero. On the controlled corpus this scores macro AUC 0.677
+  against 0.599 for the old hand-picked weights — which had themselves lost to plain
+  equal weighting (0.649).
+- **Character n-grams dropped to zero weight.** They were the strongest component on
+  Twain-vs-Darwin (0.686) and near chance against same-genre contemporaries (0.578):
+  they had been reading genre and subject, not authorship. Burrows' Delta and punctuation
+  habits — content-independent by construction — carry the score instead.
+- `type_token_ratio` and `hapax_ratio` removed from scoring; both fall as a text grows.
+  **Yule's K** and **MTLD** replace them, both length-stable by design.
+- Calibration is leave-one-out and bucketed by span length, with buckets sampled across
+  their ranges. The bands make the old units error plain: 30.2 for a 25-40 word span
+  against 50.7 for a whole document.
+- `--strength` now sets how far below the band a span may sit before it is rewritten,
+  so the dial controls a measured operating curve.
+
+### Fixed
+- **Minimal-touch.** The pipeline compared a paragraph's score against a band measured on
+  whole documents. With length-matched bands, the fraction of the author's own text
+  rewritten falls from **79% to 11%** at the default strength, with 51% of foreign text
+  still caught. Where no span band exists the pipeline now declines to judge and passes
+  the span through — leaving rough text in is the cheap error.
+- `preflight` used the same stale document-level band; it now uses the length-matched one.
+- `extract_text` returns None for a missing file instead of raising. The corpus index is
+  a cache keyed by path, so a document deleted between `learn` runs would crash
+  `train prep`.
+- Report and CLI rendering enumerate components generically instead of hard-coding six
+  names.
+
+### Known limits
+- On the naturalist group every component sits near chance. Victorian scientific prose by
+  four contemporaries may simply be near-uniform in surface form, and Bates contributes
+  only one work; this is the honest ceiling of the current feature set, and the argument
+  for the embedding tier in `docs/metrics.md` §3.
+- The test fixture pack was three ~30-word documents, which produced no span bands at all
+  and hid the attribution path entirely. It is now eight documents of varied content in
+  one voice.
+
 ## 0.1.1 (unreleased)
 
 **The voice metric is now measured.** Everything revoice decides rests on one classifier
@@ -32,6 +350,38 @@ attribution threshold is calibrated in document-level units and applied to spans
 the author's own paragraphs are classified "rewrite"**. The composite is not yet fit for the
 decision the pipeline makes with it; `stats` output and the demo site should be read with
 that in mind until it is fixed.
+
+### Site (GitHub Pages)
+- **The demo and compare pages were overclaiming and are now honest.** `compare.html`
+  previously rated Darwin as "statistically indistinguishable" from Twain while rating
+  Twain's own other work as "a reader may notice the difference" — a full inversion. Both
+  pages now state what the measure does (register-drift detection), what it cannot do
+  (authorship), and the measured error rate, on the first screen.
+- `demo.html`'s two sample buttons fed back text that is **verbatim in the corpus that
+  built the baselines** — visitors were watching memorisation. Samples are now labelled by
+  provenance and a genuinely held-out Twain passage ships alongside them.
+- Results report the **margin over the runner-up**, so a 2-point win across four baselines
+  reads as "no real winner" rather than as an answer.
+- Browser scoring weights are now chosen by `revoice bench` rather than by hand:
+  `ngram .6 / delta .2 / rhythm .1 / punct .1` scores macro AUC 0.687 / EER 0.367 against
+  0.641 / 0.401 for the previous even split. `pages/stylometry.js` and
+  `scripts/export_demo_baselines.py` share the weights and both self-calibrate
+  leave-one-out; `compare.html` reports a z-score against the reference's own variation
+  instead of a percentage of it, which saturated.
+
+### Site (bitwrench usage)
+- The pages used bitwrench as a hyperscript renderer and almost nothing else: across six
+  pages it called `bw.makeCard` exactly once out of 47 available components, and
+  hand-defined `.bw_card` / `.bw_btn` / `.bw_table` — class names that look like
+  bitwrench's but are not (BCCL emits `bw_bccl_*`), so every one had to be restyled from
+  scratch with hard-coded hex.
+- Now: real components throughout (`makeCard`, `makeTable`, `makeAlert`, `makeProgress`,
+  `makeStatCard`, `makeFormGroup`, `makeTextarea`, `makeButton`, `makeButtonGroup`,
+  `makeSpinner`), interactive regions as stateful TACOs (`o.state` + `o.render` +
+  `bw.refresh`) rather than rebuilding result blocks by hand, `bw.responsive()` in place of
+  hand-written `@media`, and every colour derived from `loadStyles().palette` and
+  `.layout` tokens so the site re-themes from two seeds. `site.js` owns theming; pages no
+  longer call `loadStyles` themselves.
 
 ### Fixed
 - `eer()` interpolates the ROC crossing instead of taking the best corner, which reported

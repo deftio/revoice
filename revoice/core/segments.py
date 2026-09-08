@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 import statistics
 
-from revoice.core.stylometry import fingerprint, tokenize
+from revoice.voicemetric.features import fingerprint, tokenize
 
 DIALOG_RX = re.compile(r'["“”]')
 PRONOUN_RX = re.compile(r"\b(I|he|she|we|they|him|her|me|us|my|his|their)\b", re.IGNORECASE)

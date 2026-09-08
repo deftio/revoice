@@ -11,7 +11,7 @@ import json
 import re
 
 from revoice.core import lint as lintmod
-from revoice.core.metrics import load_baselines, load_calibration, score_text
+from revoice.core.metrics import load_baselines, load_calibration, score_text, span_floor
 from revoice.core.spans import parse, reassemble, rewritable
 from revoice.core.voicepack import VoicePack
 from revoice.providers.base import Provider
@@ -114,8 +114,6 @@ def revoice_document(
         raise RuntimeError(f"register '{register}' not in voice '{pack.name}' (have: {sorted(baselines)})")
 
     baseline = baselines[register]
-    band = calib.get(register, {})
-    on_target_floor = band.get("self_mean", 70) - band.get("self_std", 10)
 
     from revoice.core.style import apply_hard_swaps, load_style, render_prompt_section
 
@@ -168,17 +166,34 @@ def revoice_document(
         words = len(s.text.split())
 
         # --- attribution ---
+        # The threshold comes from the calibration band for a span of THIS LENGTH.
+        # Comparing a paragraph's score against a band measured on whole documents
+        # is a units error, and it used to classify most of the author's own prose
+        # as off-target — the exact failure minimal-touch exists to prevent.
         tells = lintmod.scan(s.text, patterns)
+        # --strength is the touch dial, so it sets how far below the band a span may
+        # sit before we rewrite it. Low strength keeps more of the author's own text
+        # (a wide tolerance); high strength rewrites anything below the band's centre.
+        # sigma 1.0 at strength 0.5, 0.6 at the 0.7 default, 0 at strength 1.0.
+        sigma = max(0.0, 2.0 - 2.0 * strength)
+        floor = span_floor(calib, register, words, sigma)
         if strength >= 0.95:
             verdict = "rewrite"
         elif tells:
             verdict = "rewrite"  # AI tells present → definitely not the author's voice
         elif words < MIN_WORDS_ATTRIB:
             verdict = "rewrite" if strength > 0 else "pass"  # too short to attribute; err per strength
+        elif floor is None:
+            # No span band for this register (voice pack predates span calibration, or
+            # the corpus was too thin). Declining to judge and passing through is the
+            # safe default: leaving rough text in beats rewriting the author's own.
+            entry["attribution"] = "no-span-calibration"
+            verdict = "rewrite" if strength >= 0.9 else "pass"
         else:
             comp = score_text(s.text, baseline)["composite"]
             entry["attribution_score"] = comp
-            verdict = "pass" if comp >= on_target_floor else "rewrite"
+            entry["attribution_floor"] = round(floor, 1)
+            verdict = "pass" if comp >= floor else "rewrite"
         entry["input_tells"] = tells
 
         if verdict == "pass" or strength == 0 and not tells:

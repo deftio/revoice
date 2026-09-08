@@ -9,9 +9,9 @@ import hashlib
 from datetime import datetime, timezone
 
 from revoice.core.ingest import extract_text, walk_corpus
-from revoice.core.stylometry import fingerprint
 from revoice.core.voicepack import VoicePack
 from revoice.providers.base import Provider
+from revoice.voicemetric.features import fingerprint
 
 CLASSIFY_SYSTEM = """CLASSIFY_DOC
 You are indexing one document from a personal writing corpus for author {voice}.

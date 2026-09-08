@@ -3,38 +3,12 @@
 import json
 from types import SimpleNamespace
 
-import pytest
 from typer.testing import CliRunner
 
 from revoice.cli import app
 from tests.conftest import TRAIN, build_learned_pack
 
 runner = CliRunner()
-
-CONFIG = """\
-data_dir: data
-classifier: {kind: stub}
-rewriter: {kind: stub}
-critic: {kind: stub}
-"""
-
-
-@pytest.fixture()
-def cwd(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("REVOICE_CONFIG", raising=False)
-    (tmp_path / "revoice.yaml").write_text(CONFIG)
-    return tmp_path
-
-
-@pytest.fixture()
-def learned_cwd(cwd):
-    build_learned_pack(cwd / "data", "t")
-    (cwd / "draft.md").write_text(
-        "# Notes\n\ngotta fix the adc driver TODO maybe swap the opamp for one with 3 MHz bandwidth\n\n"
-        "The reference must settle within 3 microseconds at 85 C.\n"
-    )
-    return cwd
 
 
 def ok(result):

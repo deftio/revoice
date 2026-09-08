@@ -21,6 +21,10 @@ r["rejected_by"]                     # dimensions that fell below their reject t
 
 Dependencies: `pyyaml`. The LLM is whatever callable you hand in.
 
+**Version:** `rubric.version()` → `1.0.0`  ·  `rubric.rubric_signature(rubrics)` → a short
+hash of the spec that produced a judgment. Record both with any result — see
+[§8 Versioning](#8-versioning).
+
 ---
 
 ## 1. Why not just ask for a score?
@@ -220,14 +224,73 @@ judge_all(llm, rubrics, candidate, original=None, k=1, progress=None) -> {
 
 vote_metrics(votes, k_choices) -> dict # the agreement descriptor set, standalone —
                                        # works on any votes, human or machine
+
+version() -> str                       # "1.0.0"
+rubric_signature(rubrics) -> str       # short hash of the spec that scored something
+describe(rubrics=None) -> dict         # both, JSON-safe, for recording with a result
 ```
+
+`judge_all` also returns `"engine"`: `describe(rubrics)` for the spec it used, so a
+stored judgment carries its own provenance without the caller remembering to add it.
 
 Example rubrics in `examples/`: `summary-quality.yaml` (pair mode),
 `commit-message.yaml` (single mode).
 
 ---
 
-## 8. Known gaps & roadmap (from literature review, Aug 2026)
+## 8. Versioning
+
+Two identifiers, answering different questions.
+
+```python
+from revoice import rubric
+
+rubric.version()                  # "1.0.0"      which engine
+rubric.rubric_signature(rubrics)  # "95fc849462fd"  which spec — i.e. whether two
+                                  #                 judgments are comparable
+rubric.describe(rubrics)          # both, JSON-safe
+```
+
+**Why the spec needs its own hash.** The engine does not decide any number; your YAML
+does. Change a `scores:` mapping or a `weight:` and every composite shifts while the
+engine version stays put. The signature covers exactly the fields that move numbers —
+choice names, score mappings, weights, reject thresholds — and deliberately ignores the
+ones that do not, so rewording a `description:` for clarity does not invalidate a run.
+
+`1.x` because the contract here — the model picks a named choice, the code maps choices
+to numbers — has not changed and is not expected to. A MAJOR bump would mean previously
+recorded judgments are no longer comparable to new ones.
+
+---
+
+## 9. Install, build, test
+
+No build step: one module, `pyyaml` its only dependency.
+
+```bash
+pip install revoice            # or, from a checkout:
+uv sync --all-extras
+python -c "from revoice import rubric; print(rubric.version())"
+```
+
+```bash
+pytest tests/test_rubric.py tests/test_engine_versions.py \
+       tests/test_package_boundaries.py -q
+ruff check revoice/rubric/
+```
+
+`test_package_boundaries.py` keeps this module liftable: it parses the AST of every
+source file here and fails if any imports from the rest of revoice, or picks up a
+dependency beyond the `pyyaml` this README declares — including imports tucked inside
+function bodies, which is how such coupling usually arrives.
+
+Using it outside revoice today means copying `revoice/rubric/` — it imports nothing
+else. The `Llm` callable is the only integration point: anything with the shape
+`(system, user) -> str` works, including a human at a prompt.
+
+---
+
+## 10. Known gaps & roadmap (from literature review, Aug 2026)
 
 Noted for future work — none implemented yet:
 
@@ -266,7 +329,7 @@ Noted for future work — none implemented yet:
   winner_gap as first-class outputs of judging — appears to be this module's
   distinctive contribution.
 
-## 9. Limitations
+## 11. Limitations
 
 - Choices are treated as **unordered categories**: no ordinal distance or
   semantic similarity between anchors is encoded (a `shaded`↔`faithful` split

@@ -12,10 +12,10 @@ from revoice.core.metrics import build_baselines, score_against_pack, score_text
 from revoice.core.report import build_report, render_html, render_json, render_md
 from revoice.core.segments import analyze_blend, classify_segment
 from revoice.core.spans import parse, reassemble, rewritable
-from revoice.core.stylometry import cosine, fingerprint
 from revoice.core.voicepack import VoicePack, list_voices
 from revoice.helptext import TOPICS, topic_list
-from tests.conftest import TRAIN, FakeProvider
+from revoice.voicemetric.features import cosine, fingerprint
+from tests.conftest import FakeProvider
 
 MINIMAL_PDF = b"""%PDF-1.4
 1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
@@ -131,7 +131,8 @@ def test_build_baselines_skips_registers_with_no_readable_text(tmp_path):
     baselines = build_baselines(pack, progress=lambda r, m: seen.append(r))
     assert "nofp" not in baselines
     assert "thin" not in baselines
-    assert "mix" in baselines and seen == ["mix"]
+    # progress fires once while building the baseline and once while calibrating it
+    assert "mix" in baselines and set(seen) == {"mix"}
     assert baselines["mix"]["doc_count"] == 1
     assert baselines["mix"]["char_ngrams"]  # centroids are populated, not empty
 
@@ -165,11 +166,15 @@ def test_build_profiles_branches(tmp_path):
 
 
 def test_score_text_empty_baseline():
+    """A baseline with nothing in it must score 0 everywhere, not divide by zero."""
+    from revoice.core.metrics import COMPONENTS
+
     r = score_text("hi there", {"function_words": {}})
     assert r["burrows_delta"] == 99.0
-    assert r["components"]["rhythm"] == 0.0
-    assert r["components"]["punct"] == 0.0
-    assert r["components"]["shape"] == 0.0
+    assert set(r["components"]) == set(COMPONENTS)
+    for name, value in r["components"].items():
+        assert value == 0.0, f"{name} should be 0 against an empty baseline"
+    assert r["composite"] == 0.0
 
 
 def test_cosine_empty():
@@ -438,10 +443,12 @@ def test_preflight_chunk_seams_and_segments(learned_pack):
         "through the fog to the boats waiting in the dark harbor below the cliff.\n\n"
         "- tiny\n- list\n\n"
         "12345 67890 13579 24680 99887 77665 54433 22110 998877 665544\n\n"
-        + TRAIN.format(i=1) + "\n\n"
+        + (learned_pack.training_dir / "doc1.md").read_text().strip() + "\n\n"
         "   \n\n"
     )
-    reg = sorted(json.loads((learned_pack.params_dir / "baselines.json").read_text()))[0]
+    from revoice.core.metrics import load_baselines
+
+    reg = sorted(load_baselines(learned_pack))[0]
     plan = build_plan(doc, learned_pack, reg)
     assert plan["target_register"] == reg
     treatments = {s["treatment"] for s in plan["segments"]}
@@ -520,3 +527,69 @@ def test_voicepack_create_drops_protective_gitignore(tmp_path):
     gi.write_text("custom")
     VoicePack.create(tmp_path / "data", "me")
     assert gi.read_text() == "custom"
+
+
+# ---------- span-level calibration ----------
+
+def test_bucket_for_and_span_floor_fallbacks(learned_pack):
+    """A span longer than any measured band falls back to the nearest SHORTER band.
+
+    Scores climb with length, so a shorter bucket's band is a lower bar. Erring that
+    way keeps the author's own text untouched, which is the expensive mistake to avoid.
+    """
+    from revoice.core.metrics import SPAN_BUCKETS, _bucket_for, load_calibration, span_floor
+
+    assert _bucket_for(10) == SPAN_BUCKETS[0][1]      # below the first bucket
+    assert _bucket_for(40) == 40
+    assert _bucket_for(41) == 80
+    assert _bucket_for(10_000) == SPAN_BUCKETS[-1][1]  # above the last bucket
+
+    calib = load_calibration(learned_pack)
+    reg = next(iter(calib))
+    bands = sorted(int(k) for k in calib[reg]["spans"])
+    assert bands, "the fixture pack must produce span bands"
+
+    # a very long span reuses the largest band we actually measured
+    longest = span_floor(calib, reg, 100_000)
+    assert longest == pytest.approx(calib[reg]["spans"][str(bands[-1])]["mean"]
+                                    - calib[reg]["spans"][str(bands[-1])]["std"])
+    # unknown register, and a register with no spans at all -> decline to judge
+    assert span_floor(calib, "nonexistent", 100) is None
+    assert span_floor({reg: {"spans": {}}}, reg, 100) is None
+    # a span shorter than every band still gets the smallest one
+    assert span_floor({reg: {"spans": {"320": {"mean": 50.0, "std": 5.0}}}}, reg, 30) \
+        == pytest.approx(45.0)
+
+
+def test_calibration_bands_rise_with_span_length(learned_pack):
+    """The whole point: the score is length-dependent, so the band must be too."""
+    from revoice.core.metrics import load_calibration
+
+    calib = load_calibration(learned_pack)
+    reg = next(iter(calib))
+    spans = calib[reg]["spans"]
+    means = [spans[k]["mean"] for k in sorted(spans, key=int)]
+    assert len(means) >= 2
+    assert means[-1] > means[0], "longer spans must score higher than short ones"
+    assert calib[reg]["leave_one_out"] is True
+
+
+def test_baseline_from_texts_handles_missing_histograms():
+    """A one-line document has no paragraph histogram; aggregation must not crash."""
+    from revoice.core.metrics import baseline_from_texts
+
+    b = baseline_from_texts(["short.", "also short."])
+    assert b["doc_count"] == 2
+    assert isinstance(b["para_len_hist"], list)
+
+
+def test_calibration_skips_a_register_with_no_readable_text():
+    """An indexed register whose documents have all gone away yields no band, not a crash."""
+    from revoice.voicemetric.baseline import baseline_from_texts, calibration_from_texts
+
+    texts = ["Ordinary prose about the apparatus and its behaviour under load. " * 8,
+             "Further ordinary prose concerning the same apparatus and its limits. " * 8]
+    baselines = {"real": baseline_from_texts(texts), "gone": baseline_from_texts(texts)}
+    calib = calibration_from_texts(baselines, {"real": texts, "gone": []})
+    assert "real" in calib
+    assert "gone" not in calib
