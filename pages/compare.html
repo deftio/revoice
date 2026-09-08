@@ -6,8 +6,10 @@
 <title>revoice — compare two texts</title>
 <meta name="description" content="Paste your original and an edited version and measure how far the register drifted, component by component — n-grams, Burrows' Delta, rhythm, punctuation. Runs entirely in your browser.">
 <script src="https://cdn.jsdelivr.net/npm/bitwrench/dist/bitwrench.umd.min.js"></script>
+<script src="version.js"></script>
 <script src="site.js"></script>
 <script src="stylometry.js"></script>
+<script src="voicespace.js"></script>
 </head>
 <body>
 <div id="app"></div>
@@ -69,8 +71,14 @@ function resultView(d) {
     { t: 'div', a: { class: 'rv_cards' }, c: [
       bw.makeStatCard({ value: (d.z >= 0 ? '+' : '') + d.z.toFixed(1), suffix: ' σ',
                         label: 'register distance from the reference’s own spread', variant: b[0] }),
-      bw.makeStatCard({ value: d.composite.toFixed(0), label: 'raw similarity score',
-                        variant: '' }),
+      d.sim ? bw.makeStatCard({
+        value: d.sim.overall.toFixed(0),
+        label: d.sim.interval_reliable
+          ? 'axis similarity (' + d.sim.low.toFixed(0) + '–' + d.sim.high.toFixed(0) + ' at 90%)'
+          : 'axis similarity (no interval — too short)',
+        variant: '' })
+        : bw.makeStatCard({ value: d.composite.toFixed(0), label: 'raw similarity score',
+                            variant: '' }),
       bw.makeStatCard({ value: d.self[0].toFixed(0) + ' ± ' + d.self[1].toFixed(0),
                         label: 'reference self-band (' + d.windows + ' windows, leave-one-out)',
                         variant: '' })
@@ -83,20 +91,10 @@ function resultView(d) {
       { t: 'b', c: 'Biggest movement: ' }, weakest.name,
       ' (similarity ' + weakest.v.toFixed(2) + ') — ', weakest.what, '.' ]}}),
 
-    scrollTable({
-      data: d.rows,
-      columns: [
-        { key: 'name', label: 'component' },
-        { key: 'v', label: 'similarity to reference',
-          render: function (v) {
-            return bw.makeProgress({ value: Math.round(v * 100),
-              variant: v >= 0.75 ? 'success' : (v >= 0.5 ? 'warning' : 'danger'),
-              label: v.toFixed(2) });
-          } },
-        { key: 'what', label: 'what it measures' }
-      ],
-      hover: true
-    }),
+    d.chart ? { t: 'div', a: { class: 'rv_scroll rv_chart' }, c: bw.raw(d.chart) }
+            : bw.makeAlert({ variant: 'warning', content:
+                'Axis chart unavailable — demo/population.json did not load, so there is no '
+                + 'reference population to place this text against.' }),
 
     d.caveats.length ? bw.makeAlert({ variant: 'warning', content: { t: 'span', c: [
       { t: 'b', c: 'About this run: ' }, d.caveats.join(' · ') ]}}) : ''
@@ -112,6 +110,20 @@ function compare(panel) {
   }
   var base = buildBaseline(ref);
   var r = score(fingerprint(cand), base);
+
+  // the axis chart: reference windows become a voice REGION, and the candidate is
+  // placed in it. z-scored against a shipped population of real prose, not against
+  // the reference itself — otherwise every coordinate collapses toward zero.
+  var chart = '', simReport = null;
+  if (POPULATION) {
+    var refWindows = vsWindows(ref);
+    if (refWindows.length < 2) refWindows = [ref];
+    var region = vsFitRegion('your reference', refWindows, POPULATION);
+    simReport = vsSimilarityReport(cand, region, POPULATION);
+    chart = vsRenderChart(simReport, 'Candidate vs your reference',
+      simReport.words + ' words · ' + simReport.windows + ' window(s) · 17 axes · '
+      + Math.round(simReport.confidence * 100) + '% bootstrap interval');
+  }
   var rw = ((ref.toLowerCase().match(/[a-z']+/g)) || []).length;
   var cw = ((cand.toLowerCase().match(/[a-z']+/g)) || []).length;
 
@@ -121,8 +133,12 @@ function compare(panel) {
   if (base.windows < 3) caveats.push('the reference yielded only ' + base.windows + ' window(s), so the variation band is close to a guess');
   if (base.contaminated) caveats.push('too few windows to hold one out, so the self-band is optimistic');
 
+  if (simReport && !simReport.interval_reliable)
+    caveats.push('the candidate is under three paragraphs, so the chart shows no interval');
+
   state.result = { z: r.z, composite: r.composite, self: base.self, windows: base.windows,
-                   rows: componentRows(r.parts, r.delta), caveats: caveats };
+                   rows: componentRows(r.parts, r.delta), caveats: caveats,
+                   chart: chart, sim: simReport };
   bw.refresh(panel);
 }
 
@@ -160,6 +176,14 @@ bw.mount('#app', sitePage('compare.html', [
     { t: 'div', a: { id: 'results' }, c: '' }
   ]),
 
+  section('Where the interval comes from', [
+    { t: 'p', c: 'The candidate is split into paragraph windows and those windows are resampled with replacement 400 times. The band is the 5th to 95th percentile of the result — it answers how much this reading would move if you had been handed a different few pages of the same document. Under three windows there is nothing to resample, and the page says so instead of drawing a band it cannot support.' },
+    bw.makeAlert({ variant: 'info', content: { t: 'span', c: [
+      { t: 'b', c: 'Same numbers as the local tool. ' },
+      'This page runs a JavaScript port of the same 17-axis measurement revoice uses; a test in the repo asserts the two agree exactly on shared fixtures, so what you see here is what ',
+      { t: 'code', c: 'revoice space' }, ' would print.' ]}})
+  ]),
+
   section('How to read the result', [
     { t: 'p', c: 'The reference is split into windows and each is scored against a baseline built from the others — leave-one-out, so no window is graded against itself. That gives a self-band: how much the reference varies against its own writing. The candidate is then placed relative to that band.' },
     cardRow([
@@ -180,6 +204,14 @@ bw.mount('#app', sitePage('compare.html', [
       '. Setup: ', { t: 'a', a: { href: 'getting-started.html' }, c: 'getting started' }, '.'] }
   ])
 ]));
+
+/* The reference population: 17 axes x (mean, sd) fitted on the benchmark corpus.
+   ~1 KB, so it costs nothing to ship and it is what makes a coordinate mean
+   "compared to real English prose" rather than "compared to itself". */
+var POPULATION = null;
+fetch('demo/population.json').then(function (r) { return r.json(); })
+  .then(function (p) { POPULATION = p; })
+  .catch(function () { /* the page still works; the chart says why it is missing */ });
 
 var panel = bw.mount('#results', { t: 'div', o: {
   state: state,

@@ -1,5 +1,65 @@
 # Changelog
 
+## 0.1.8 (unreleased)
+
+**The site shows the real metric; there is now one command to ship it.**
+
+### Added
+- **`scripts/release.sh`** — cuts a release the way a person would: bump, verify, build,
+  then ship through a **pull request that CI must pass** before anything merges or
+  publishes. Four rungs, each opting into more, and nothing before `--pr` touches the
+  remote: `--commit` (local branch), `--pr` (push + open PR), `--release` (wait for CI
+  green, squash-merge, tag, publish). Every rung confirms first.
+  - **`--release` blocks on the CI run GitHub performs against the PR**, not on the local
+    checks. Those are a fast filter; a release whose only evidence is "it passed on my
+    laptop" is the thing this script exists to prevent. Red CI leaves the PR open and
+    publishes nothing.
+  - `main` only ever moves through a squash-merged PR; the merge commit is tagged and a
+    **GitHub Release is published with the wheel and sdist attached**, so what people
+    download is the artefact the script built and test-installed.
+  - Refuses to release a version the CHANGELOG has no notes for, or an empty section.
+  - Regenerates `pages/version.js`, `population.json` and `voices.json`, because the
+    site embeds the version and the metric signature and a stale one ships a lie.
+  - **Installs the built wheel into a throwaway venv and asks its version** — the only
+    check that catches a package that builds fine and is broken on arrival, and it
+    verifies both engine READMEs and the GUI actually made it into the wheel.
+  - Ordered cheapest-failure-first, and nothing is written to the working tree until
+    every cheap gate has passed, so a failed run leaves the repo as it found it.
+- `tests/test_release_script.py` — the guards, plus assertions read from the script's
+  own source that it cannot push without `--push` and never runs fewer gates than CI.
+- `CONTRIBUTING.md` documents the release flow, including that the two engine versions
+  are bumped by hand and deliberately not touched by the release script.
+
+### Added (site)
+- `pages/voicespace.js` — a browser port of `voicemetric.space` and `chart.py`. The
+  compare page builds its reference from text the reader pastes in, so the measurement
+  has to run client-side; there is no server to ask.
+- **The compare tab now renders the full 17-axis chart** — per-axis bars with direction,
+  bootstrap whiskers, and the overall similarity with its interval — replacing the
+  four-row component table.
+- `pages/demo/population.json` — the reference population (17 axes × mean/sd, ~1 KB,
+  fitted on the 1,594-document benchmark corpus), exported by
+  `scripts/export_demo_baselines.py`. Without it the page would have to treat whatever
+  was pasted in as its own definition of typical prose, which puts every coordinate near
+  zero and makes the chart say nothing.
+- `pages/version.js` — generated, so it cannot drift: the nav prints
+  `revoice 0.1.8` in small print, with voicemetric's version and signature and rubric's
+  version on hover, and the footer carries all three.
+- `tests/test_pages_parity.py` — runs the page's actual JavaScript under node against
+  the Python engine on shared fixtures. **They agree exactly**, not approximately: the
+  JS rounds where the fingerprint rounds, so the tolerance is 1e-9 rather than something
+  loose enough to hide the drift the test exists to catch. Also checks the shipped
+  population matches the current axis set, that `version.js` matches the installed
+  packages, and that every page loads it *before* `site.js`.
+- CI installs node, because these tests skip without it and a silent skip is exactly how
+  two implementations of one measurement drift apart.
+
+### Why a second implementation at all
+Two copies of a measurement is a real cost, taken deliberately: the alternative is a
+compare page that either needs a backend or shows something weaker than the tool does.
+The parity test is what makes it affordable — a divergence is a failing build rather
+than a discrepancy someone notices months later by hand.
+
 ## 0.1.7 (unreleased)
 
 **Both engines are versioned, and revoice records which build produced a number.**

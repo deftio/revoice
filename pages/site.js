@@ -68,6 +68,9 @@ bw.injectCSS(bw.css({
   '.rv_nav a.rv_active': { color: P.primary.base, borderBottomColor: P.primary.base,
                            fontWeight: '600' },
 
+  '.rv_version': { fontFamily: 'Menlo,Consolas,monospace', fontSize: '0.72em',
+                   color: P.light.darkText, marginLeft: '1.1em', whiteSpace: 'nowrap',
+                   alignSelf: 'center', cursor: 'help' },
   '.rv_wrap': { maxWidth: '1280px', margin: '0 auto', padding: '0 3rem' },
   '.rv_hero': { padding: '1.3em 0 0 0' },
 
@@ -127,6 +130,19 @@ var NAV = [
   ['https://github.com/deftio/revoice', 'GitHub']
 ];
 
+/* Version, in small print. Generated into version.js by
+   scripts/export_demo_baselines.py, so it cannot drift from the package it names; the
+   guard keeps the page working if that file has not been generated yet. */
+function versionTag() {
+  if (typeof REVOICE_VERSION === 'undefined') return '';
+  return { t: 'span', a: { class: 'rv_version',
+                           title: 'voicemetric ' + REVOICE_VERSION.voicemetric +
+                                  ' (' + REVOICE_VERSION.voicemetric_signature + ') · rubric ' +
+                                  REVOICE_VERSION.rubric },
+           c: 'revoice ' + REVOICE_VERSION.revoice };
+}
+
+
 function siteHeader(active) {
   return { t: 'div', a: { class: 'rv_topbar' }, c: { t: 'div', a: { class: 'rv_topbar_inner' }, c: [
     { t: 'a', a: { class: 'rv_brand', href: 'index.html' }, c: [
@@ -137,7 +153,8 @@ function siteHeader(active) {
       c: NAV.map(function (item) {
         return { t: 'a', a: { href: item[0], class: item[0] === active ? 'rv_active' : '' },
                  c: item[1] };
-      }) }
+      }) },
+    versionTag()
   ]}};
 }
 
@@ -148,7 +165,11 @@ function siteFooter() {
     { t: 'a', a: { href: 'https://github.com/deftio' }, c: 'deftio' },
     ' · built with ',
     { t: 'a', a: { href: 'https://github.com/deftio/bitwrench' }, c: 'bitwrench' },
-    ' · no cookies · privacy-preserving analytics (GoatCounter)'
+    ' · no cookies · privacy-preserving analytics (GoatCounter)',
+    (typeof REVOICE_VERSION === 'undefined') ? '' :
+      { t: 'span', c: ' · revoice ' + REVOICE_VERSION.revoice +
+                      ' · voicemetric ' + REVOICE_VERSION.voicemetric +
+                      ' · rubric ' + REVOICE_VERSION.rubric }
   ]};
 }
 

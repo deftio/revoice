@@ -1,6 +1,6 @@
 [project]
 name = "revoice"
-version = "0.1.7"
+version = "0.1.8"
 description = "Rewrite documents in your own voice. Register transfer within one author, structure preserved."
 readme = "README.md"
 requires-python = ">=3.10"

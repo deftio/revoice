@@ -74,3 +74,56 @@ for input and output — "sounds wrong" plus numbers beats "sounds wrong".
 ## License
 
 BSD-2-Clause. By contributing you agree your contributions are licensed the same.
+
+## Releasing
+
+`scripts/release.sh` cuts a release the way a person would: a pull request that CI must
+pass before anything is merged or published. Four steps, each opting into more, and
+nothing before `--pr` touches the remote.
+
+```bash
+./scripts/release.sh --patch            # verify + build, report what would happen
+./scripts/release.sh --patch --commit   # bump and commit on a release branch, locally
+./scripts/release.sh --patch --pr       # push the branch and open a PR into main
+./scripts/release.sh --patch --release  # wait for CI green, squash-merge, tag, publish
+```
+
+Before running it, retitle the CHANGELOG's top section to `## X.Y.Z (unreleased)` for
+the version you intend to ship. The script refuses to release a version the changelog
+has no notes for, and refuses an empty section.
+
+`--pr` and `--release` need the [GitHub CLI](https://cli.github.com) authenticated
+(`gh auth login`).
+
+### What it checks, cheapest failure first
+
+1. the tag is free, the branch is known, `gh` is authenticated
+2. the CHANGELOG has real notes for exactly this version
+3. `pages/version.js`, `population.json` and `voices.json` regenerate — the site embeds
+   the version and the metric's signature, and a stale one ships a lie
+4. privacy gate · ruff · pytest at 100% coverage · the voice-metric bench
+5. sdist **and** wheel build, then the wheel is installed into a throwaway venv and asked
+   its version — the only check that catches a package that builds fine and is broken on
+   arrival, such as a missing `package-data` entry
+6. **the CI run GitHub performs against the PR is green** — `--release` blocks on it and
+   refuses to merge or publish if it is red
+
+Steps 1–5 run on your machine and are a fast filter, not the authority. Step 6 is the one
+that decides: a release whose only evidence is "it passed on my laptop" is what this
+script exists to prevent. Nothing before step 3 writes to your working tree, so a failed
+run leaves the repo exactly as it found it.
+
+### What ends up on GitHub
+
+`main` only ever moves through a squash-merged PR. The merge commit is tagged `vX.Y.Z`,
+and a GitHub Release is published with the CHANGELOG section as its notes and **the wheel
+and sdist attached** — so the artefacts people download are the exact ones the script
+built and test-installed, not a rebuild. GitHub Pages rebuilds from `pages/` on the merge.
+
+### The engine versions
+
+`revoice/rubric/` and `revoice/voicemetric/` carry their own version numbers and the
+release script does *not* touch them. Bump those by hand in their own `__init__.py` when
+their behaviour changes — for `voicemetric` that particularly means a MINOR bump whenever
+the numbers move, which `signature()` reflects and `revoice status` then warns about for
+any pack built under the old one.
