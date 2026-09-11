@@ -476,3 +476,161 @@ def test_cli_space_json_includes_the_interval(space_corpus, tmp_path):
     assert r.exit_code == 0, r.output
     sim = json.loads(r.output)["similarity"]
     assert sim["low"] <= sim["overall"] <= sim["high"]
+
+
+# ---------- the full HTML report ----------
+
+
+def _three_reports():
+    from revoice.voicemetric.space import similarity_report
+
+    pop = Population.fit([_long(TERSE), _long(ORNATE), TERSE + ORNATE])
+    region = VoiceRegion.fit("terse", [_long(TERSE), _long(TERSE) + " More."], pop)
+    return [("close", "same style", similarity_report(_long(TERSE), region, pop, replicates=60)),
+            ("far", "other style", similarity_report(_long(ORNATE), region, pop, replicates=60)),
+            ("short", "no interval", similarity_report("Tiny.", region, pop, replicates=60))]
+
+
+def test_overlap_is_the_shared_span_of_two_intervals():
+    from revoice.voicemetric.chart import overlap
+
+    a = {"low": 30.0, "high": 50.0, "interval_reliable": True}
+    b = {"low": 45.0, "high": 60.0, "interval_reliable": True}
+    assert overlap(a, b) == pytest.approx(5.0)
+    apart = {"low": 70.0, "high": 80.0, "interval_reliable": True}
+    assert overlap(a, apart) < 0            # negative means clear of each other
+    assert math.isnan(overlap(a, {**b, "interval_reliable": False}))
+
+
+def test_worst_overlap_finds_the_least_defensible_comparison():
+    from revoice.voicemetric.chart import worst_overlap
+
+    reports = [{"low": 0.0, "high": 10.0, "interval_reliable": True},
+               {"low": 9.0, "high": 20.0, "interval_reliable": True},
+               {"low": 50.0, "high": 60.0, "interval_reliable": True}]
+    a, b, ov = worst_overlap(reports)
+    assert ov == pytest.approx(1.0)
+    assert {a["low"], b["low"]} == {0.0, 9.0}
+    assert worst_overlap([{"low": 1.0, "high": 2.0, "interval_reliable": False}]) is None
+
+
+def test_report_is_self_contained_html():
+    """No scripts, no network: it must open from a file, in an email, in five years."""
+    from revoice.voicemetric import chart as voicechart
+
+    html = voicechart.report(_three_reports(), voice="terse", engine="voicemetric 0.0.0")
+    assert html.startswith("<!doctype html>") and html.rstrip().endswith("</html>")
+    assert "<script" not in html.lower()
+    # nothing that FETCHES. The SVG xmlns is an identifier, never a request, so the
+    # check is on the attributes and CSS constructs that actually reach the network.
+    for fetcher in (" src=", " href=", "@import", "url("):
+        assert fetcher not in html, f"report would fetch something: {fetcher!r}"
+    assert "@media (prefers-color-scheme: dark)" in html, "must survive a dark viewer"
+
+
+def test_report_puts_every_reading_on_one_rail():
+    from revoice.voicemetric import chart as voicechart
+
+    items = _three_reports()
+    html = voicechart.report(items, voice="terse")
+    assert html.count('class="rrow"') == len(items)
+    for label, _, _ in items:
+        assert label in html
+    assert html.count("<figure>") == len(items), "one axis chart per sample"
+
+
+def test_report_states_the_overlap_rather_than_leaving_it_to_be_noticed():
+    from revoice.voicemetric import chart as voicechart
+
+    overlapping = [("a", "x", {**_three_reports()[0][2], "overall": 50.0, "low": 40.0, "high": 60.0}),
+                   ("b", "y", {**_three_reports()[0][2], "overall": 52.0, "low": 42.0, "high": 62.0})]
+    html = voicechart.report(overlapping, voice="v")
+    assert "pts overlap" in html
+    assert "is not evidence" in html
+
+
+def test_report_says_when_nothing_overlaps():
+    from revoice.voicemetric import chart as voicechart
+
+    base = _three_reports()[0][2]
+    apart = [("a", "x", {**base, "overall": 20.0, "low": 15.0, "high": 25.0}),
+             ("b", "y", {**base, "overall": 80.0, "low": 75.0, "high": 85.0})]
+    assert "no overlap" in voicechart.report(apart, voice="v")
+
+
+def test_report_says_when_no_interval_could_be_measured():
+    from revoice.voicemetric import chart as voicechart
+
+    base = _three_reports()[0][2]
+    short = [("a", "x", {**base, "interval_reliable": False}),
+             ("b", "y", {**base, "interval_reliable": False})]
+    html = voicechart.report(short, voice="v")
+    assert "no intervals" in html and "impressions" in html
+
+
+def test_report_escapes_labels():
+    from revoice.voicemetric import chart as voicechart
+
+    items = [("<script>x</script>", "&sub", _three_reports()[0][2])]
+    html = voicechart.report(items, voice="v")
+    assert "<script>x</script>" not in html
+    assert "&lt;script&gt;" in html
+
+
+def test_cli_space_writes_a_multi_sample_report(space_corpus, tmp_path):
+    a, b = tmp_path / "a.md", tmp_path / "b.md"
+    a.write_text(_long(TERSE))
+    b.write_text(_long(ORNATE))
+    out = tmp_path / "report.html"
+    r = runner.invoke(app, ["space", str(space_corpus), "--against", "terse",
+                            "-t", str(a), "-t", str(b), "--report", str(out),
+                            "--replicates", "40"])
+    assert r.exit_code == 0, r.output
+    assert out.is_file() and out.read_text().startswith("<!doctype html>")
+    assert "2 sample(s) vs 'terse'" in r.output
+    assert "report:" in r.output
+
+
+def test_cli_multi_sample_needs_a_voice_to_compare_against(space_corpus, tmp_path):
+    a = tmp_path / "a.md"
+    a.write_text(_long(TERSE))
+    r = runner.invoke(app, ["space", str(space_corpus), "-t", str(a),
+                            "--report", str(tmp_path / "x.html")])
+    assert r.exit_code == 1
+    assert "need --against" in r.output
+
+
+def test_cli_multi_sample_rejects_an_unknown_voice(space_corpus, tmp_path):
+    a = tmp_path / "a.md"
+    a.write_text(_long(TERSE))
+    r = runner.invoke(app, ["space", str(space_corpus), "-t", str(a), "--against", "nobody",
+                            "--report", str(tmp_path / "x.html")])
+    assert r.exit_code == 1
+    assert "unknown group" in r.output
+
+
+def test_cli_multi_sample_json(space_corpus, tmp_path):
+    a, b = tmp_path / "a.md", tmp_path / "b.md"
+    a.write_text(_long(TERSE))
+    b.write_text(_long(ORNATE))
+    r = runner.invoke(app, ["space", str(space_corpus), "--against", "terse",
+                            "-t", str(a), "-t", str(b), "--json", "--replicates", "40"])
+    assert r.exit_code == 0, r.output
+    d = json.loads(r.output)
+    assert d["against"] == "terse" and len(d["samples"]) == 2
+    assert all("file" in s and "overall" in s for s in d["samples"])
+
+
+def test_cli_warns_at_the_terminal_when_the_ordering_is_not_evidence(space_corpus, tmp_path):
+    """The rail says it on the page; the CLI must say it in the terminal too, or someone
+    reads two numbers off stdout and draws the conclusion the intervals forbid."""
+    a, b = tmp_path / "a.md", tmp_path / "b.md"
+    body = _long(TERSE)
+    a.write_text(body)
+    b.write_text(body + "\n\nA further passage in the very same manner of writing.")
+    out = tmp_path / "r.html"
+    r = runner.invoke(app, ["space", str(space_corpus), "--against", "terse",
+                            "-t", str(a), "-t", str(b), "--report", str(out),
+                            "--replicates", "120"])
+    assert r.exit_code == 0, r.output
+    assert "overlaps by" in r.output and "not evidence" in r.output

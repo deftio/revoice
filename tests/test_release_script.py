@@ -1,10 +1,11 @@
-"""The release script's guards.
+"""The release script's guards and its read-only contract.
 
 Only the cheap, early stages are exercised here. The script runs the full test suite as
-one of its own gates, so a test that drove it past that point would recurse into pytest
-— every guard below fails before the script reaches that stage, which is itself part of
-the design: nothing expensive runs until the cheap checks have passed, and nothing is
-written to the working tree until they have.
+one of its own gates, so a test that drove it past that point would recurse into pytest.
+
+The central property is that the script writes NOTHING to the repository — it ships what
+is already committed. If a release edits code, what ships is not what was reviewed and
+tested, and the commit CI validated is not the commit that gets tagged.
 """
 
 import shutil
@@ -34,19 +35,25 @@ def test_script_is_executable_and_valid_bash():
 
 
 @bash
-def test_help_documents_the_safety_ladder():
+def test_help_documents_the_ladder_and_the_read_only_contract():
     r = run("--help")
     assert r.returncode == 0
-    for flag in ("--patch", "--commit", "--pr", "--release", "--yes", "--version"):
+    for flag in ("--pr", "--release", "--pypi", "--expect", "--yes"):
         assert flag in r.stdout, f"--help does not mention {flag}"
-    assert "Nothing before --pr touches the remote" in r.stdout
+    assert "writes nothing to the repository" in r.stdout
 
 
 @bash
-def test_refuses_without_a_version_choice():
-    r = run()
-    assert r.returncode != 0
-    assert "say which version" in r.stderr
+def test_refuses_a_dirty_working_tree():
+    """Release ships what is committed. An uncommitted change is one CI never saw."""
+    scratch = ROOT / "release-dirty-probe.tmp"
+    scratch.write_text("uncommitted\n")
+    try:
+        r = run()
+        assert r.returncode != 0
+        assert "working tree is not clean" in r.stderr
+    finally:
+        scratch.unlink()
 
 
 @bash
@@ -57,34 +64,54 @@ def test_rejects_an_unknown_option():
 
 
 @bash
-def test_refuses_a_version_the_changelog_has_no_notes_for():
-    """Releasing without notes is the easiest mistake to make and the least visible."""
-    r = run("--version", "99.99.99")
+def test_expect_guards_against_releasing_the_wrong_version():
+    r = run("--expect", "99.99.99")
     assert r.returncode != 0
-    out = r.stdout + r.stderr
-    assert "CHANGELOG" in out and "99.99.99" in out
+    assert "--expect said 99.99.99" in r.stderr
 
 
 @bash
 def test_refuses_to_reuse_an_existing_tag():
-    tag = "v0.0.99-release-test"
-    subprocess.run(["git", "tag", tag], cwd=ROOT, capture_output=True)
+    import revoice
+
+    tag = f"v{revoice.__version__}"
+    existed = subprocess.run(["git", "rev-parse", "-q", "--verify", f"refs/tags/{tag}"],
+                             cwd=ROOT, capture_output=True).returncode == 0
+    if not existed:
+        subprocess.run(["git", "tag", tag], cwd=ROOT, capture_output=True)
     try:
-        r = run("--version", "0.0.99-release-test")
+        r = run()
         assert r.returncode != 0
+        assert "already exists" in r.stderr
     finally:
-        subprocess.run(["git", "tag", "-d", tag], cwd=ROOT, capture_output=True)
+        if not existed:
+            subprocess.run(["git", "tag", "-d", tag], cwd=ROOT, capture_output=True)
 
 
 @bash
-def test_a_failed_run_leaves_the_working_tree_untouched():
-    """The changelog gate runs BEFORE anything is written, on purpose."""
-    before = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT,
-                            capture_output=True, text=True).stdout
-    run("--version", "99.99.99")
-    after = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT,
-                           capture_output=True, text=True).stdout
-    assert before == after, "a failed release run modified the working tree"
+def test_the_retired_editing_flags_explain_what_replaced_them():
+    for flag in ("--patch", "--minor", "--major", "--commit", "--push"):
+        r = run(flag)
+        assert r.returncode != 0
+        assert "no longer edits the repo" in r.stderr, flag
+
+
+def test_the_script_never_writes_to_the_repository():
+    """The contract, read from the source: no redirect or in-place edit of tracked files."""
+    import re
+
+    src = SCRIPT.read_text()
+    for pattern in (r"sed -i", r">\s*(?:revoice|pages|pyproject|CHANGELOG)",
+                    r"\.write_text\(", r"git commit", r"git add"):
+        assert not re.search(pattern, src), f"release.sh appears to write: {pattern}"
+
+
+def test_the_version_is_read_from_the_single_source_of_truth():
+    src = SCRIPT.read_text()
+    assert "revoice/__init__.py" in src
+    assert "__version__" in src
+    # and it must not parse a version out of pyproject, which merely derives one
+    assert 'pyproject.toml").read_text()' not in src
 
 
 # ---------- the script's own promises, read from its source ----------
@@ -92,13 +119,29 @@ def test_a_failed_run_leaves_the_working_tree_untouched():
 
 def test_the_ladder_gates_each_step_behind_its_own_flag():
     """Nothing reaches the remote without --pr; nothing merges or publishes without
-    --release. Each rung exits early rather than falling through to the next."""
+    --release; nothing reaches PyPI without --pypi."""
     src = SCRIPT.read_text()
-    assert 'if [ "$DO_COMMIT" -eq 0 ]' in src and 'if [ "$DO_PR" -eq 0 ]' in src \
-        and 'if [ "$DO_RELEASE" -eq 0 ]' in src
-    # each early-exit block ends the run rather than continuing
-    assert src.count("exit 0") >= 4
-    assert src.count("confirm ") >= 4, "branch, push, merge and publish must each confirm"
+    for gate in ('if [ "$DO_PR" -eq 0 ]', 'if [ "$DO_RELEASE" -eq 0 ]',
+                 'if [ "$DO_PYPI" -eq 1 ]'):
+        assert gate in src, f"missing gate: {gate}"
+    assert src.count("exit 0") >= 3
+    assert src.count("confirm ") >= 3, "push, merge and publish must each confirm"
+
+
+def test_pypi_upload_is_opt_in_and_checks_for_a_token():
+    src = SCRIPT.read_text()
+    assert "uv publish" in src
+    assert "UV_PUBLISH_TOKEN" in src
+    assert src.index("UV_PUBLISH_TOKEN") < src.index("uv publish"), \
+        "the token check must come before the upload"
+    assert "cannot be re-uploaded" in src, "an irreversible upload should say so"
+
+
+def test_generated_site_files_are_verified_not_regenerated():
+    """Regenerating during a release would mean the release authors code."""
+    src = SCRIPT.read_text()
+    assert "export_demo_baselines.py --check" in src
+    assert "export_demo_baselines.py\n" not in src.replace(" --check", " --check\n")
 
 
 def test_release_is_gated_on_remote_ci_not_local_checks():
@@ -131,11 +174,6 @@ def test_gh_is_required_and_checked_for_auth_before_any_remote_step():
     src = SCRIPT.read_text()
     assert "gh auth status" in src
     assert src.index("gh auth status") < src.index("gh pr create")
-
-
-def test_the_retired_push_flag_says_what_replaced_it():
-    src = SCRIPT.read_text()
-    assert "--push is now --pr" in src
 
 
 def test_the_verify_stage_runs_the_same_gates_as_ci():

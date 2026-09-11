@@ -499,14 +499,19 @@ def space(
     compare: Path = typer.Option(None, "--compare", "-c",
                                  help="Second corpus to place alongside the first "
                                       "(e.g. the modern-register corpus)."),
-    text: Path = typer.Option(None, "--text", "-t",
-                              help="Score one document and show its coordinates."),
+    text: list[Path] = typer.Option(None, "--text", "-t",
+                                    help="Score a document against --against. Repeatable: "
+                                         "pass several to compare them on one scale."),
     against: str = typer.Option(None, "--against",
                                 help="With --text: the group to measure deviations from."),
     top: int = typer.Option(8, "--top", help="Axes to show."),
     svg: Path = typer.Option(None, "--svg",
-                             help="With --text/--against: write the similarity chart here "
-                                  "(dependency-free SVG, embeddable in the HTML report)."),
+                             help="Write the axis chart for a single --text here "
+                                  "(dependency-free SVG, embeddable anywhere)."),
+    report: Path = typer.Option(None, "--report",
+                                help="Write a full standalone HTML report for all --text "
+                                     "samples: every reading on one scale with its interval, "
+                                     "then the axes for each. No scripts, no network."),
     replicates: int = typer.Option(400, "--replicates",
                                    help="Bootstrap resamples behind the confidence interval."),
     as_json: bool = typer.Option(False, "--json"),
@@ -558,7 +563,47 @@ def space(
         groups[tag[id(d)]].append(d.text)
     regions = {k: VoiceRegion.fit(k, v, pop) for k, v in groups.items() if len(v) >= 3}
 
+    if text and (report or len(text) > 1):
+        from revoice.voicemetric import chart as voicechart
+        from revoice.voicemetric import describe, similarity_report
+
+        if not against:
+            typer.secho("--report and multiple --text need --against: a report compares "
+                        "samples to a voice", fg="red")
+            raise typer.Exit(1)
+        if against not in regions:
+            typer.secho(f"unknown group '{against}' (have: {', '.join(sorted(regions))})", fg="red")
+            raise typer.Exit(1)
+
+        items, payload = [], []
+        for f in text:
+            r = similarity_report(f.read_text(), regions[against], pop, replicates=replicates)
+            items.append((f.stem, str(f), r))
+            payload.append({"file": str(f), **r})
+        if as_json:
+            typer.echo(json.dumps({"against": against, "samples": payload}, indent=2))
+            return
+
+        d = describe()
+        html = voicechart.report(items, voice=against,
+                                 engine=f"voicemetric {d['version']} ({d['signature']})")
+        out = report or Path(f"voice-report-{against}.html")
+        out.write_text(html)
+
+        typer.secho(f"{len(items)} sample(s) vs '{against}'", bold=True)
+        for label, _, r in sorted(items, key=lambda it: -it[2]["overall"]):
+            band = (f"[{r['low']:.0f}\u2013{r['high']:.0f}]" if r["interval_reliable"]
+                    else "(no interval)")
+            typer.echo(f"  {label:<28}{r['overall']:>6.1f}  {band}")
+        worst = voicechart.worst_overlap([r for _, _, r in items])
+        if worst and worst[2] > 0:
+            typer.secho(f"  closest pair overlaps by {worst[2]:.1f} points — that ordering "
+                        "is not evidence", fg="yellow")
+        typer.secho(f"  report: {out}", fg="green")
+        return
+
     if text:
+        text = text[0]
         z = pop.standardize(text.read_text())
         result = {"coordinates": {a: round(z[a], 2) for a in AXIS_NAMES}}
         if against:

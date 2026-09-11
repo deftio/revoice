@@ -67,7 +67,46 @@ function resultView(d) {
   var b = bandFor(d.z);
   var weakest = d.rows.slice().sort(function (x, y) { return x.v - y.v; })[0];
 
+  var rail = '';
+  if (d.paired) {
+    var ov = vsOverlap(d.paired.self, d.paired.candidate);
+    var drifted = d.paired.candidate.overall < d.paired.self.overall;
+    var verdict;
+    if (ov !== ov) {
+      verdict = [{ t: 'span', a: { class: 'rv_flag' }, c: 'no interval' },
+                 { t: 'p', c: 'One of these is too short to resample, so there is no measured '
+                            + 'uncertainty to compare. Treat the numbers as impressions.' }];
+    } else if (ov > 0) {
+      verdict = [{ t: 'span', a: { class: 'rv_flag' }, c: ov.toFixed(1) + ' pts overlap' },
+                 { t: 'p', c: 'The candidate sits inside the range the reference already covers '
+                            + 'on its own. On this measure the register did not move — and that '
+                            + 'is a statement about surface style, not about who wrote it.' }];
+    } else if (drifted) {
+      verdict = [{ t: 'span', a: { class: 'rv_flag' }, c: (-ov).toFixed(1) + ' pts below' },
+                 { t: 'p', c: 'The candidate falls below everything the reference does on its '
+                            + 'own, so the drift is larger than the reference\u2019s internal '
+                            + 'variation. The axes below show where it came from.' }];
+    } else {
+      verdict = [{ t: 'span', a: { class: 'rv_flag' }, c: (-ov).toFixed(1) + ' pts above' },
+                 { t: 'p', c: 'The candidate scores higher than the reference\u2019s own '
+                            + 'passages do. That is not a closer match \u2014 it usually means '
+                            + 'the candidate is unusually uniform, or too short to vary. Check '
+                            + 'the window count before reading anything into it.' }];
+    }
+    rail = { t: 'div', a: { class: 'rv_rail' }, c: [
+      vsRailRow('Your reference', 'its own passages, scored the same way', d.paired.self),
+      vsRailRow('The candidate', 'against the same reduced references', d.paired.candidate),
+      { t: 'div', a: { class: 'rv_rscale' }, c: [
+        { t: 'span' },
+        { t: 'span', a: { class: 'rv_rticks' },
+          c: ['0', '25', '50', '75', '100'].map(function (t) { return { t: 'span', c: t }; }) },
+        { t: 'span' } ]},
+      { t: 'div', a: { class: 'rv_verdict' }, c: verdict }
+    ]};
+  }
+
   return { t: 'div', c: [
+    rail,
     { t: 'div', a: { class: 'rv_cards' }, c: [
       bw.makeStatCard({ value: (d.z >= 0 ? '+' : '') + d.z.toFixed(1), suffix: ' σ',
                         label: 'register distance from the reference’s own spread', variant: b[0] }),
@@ -114,12 +153,15 @@ function compare(panel) {
   // the axis chart: reference windows become a voice REGION, and the candidate is
   // placed in it. z-scored against a shipped population of real prose, not against
   // the reference itself — otherwise every coordinate collapses toward zero.
-  var chart = '', simReport = null;
+  var chart = '', simReport = null, paired = null;
   if (POPULATION) {
     var refWindows = vsWindows(ref);
     if (refWindows.length < 2) refWindows = [ref];
     var region = vsFitRegion('your reference', refWindows, POPULATION);
     simReport = vsSimilarityReport(cand, region, POPULATION);
+    // Reference and candidate scored against the SAME reduced regions, so the
+    // comparison is fair — see vsPairedReadings for the trap this avoids.
+    paired = vsPairedReadings(refWindows, cand, POPULATION);
     chart = vsRenderChart(simReport, 'Candidate vs your reference',
       simReport.words + ' words · ' + simReport.windows + ' window(s) · 17 axes · '
       + Math.round(simReport.confidence * 100) + '% bootstrap interval');
@@ -138,7 +180,7 @@ function compare(panel) {
 
   state.result = { z: r.z, composite: r.composite, self: base.self, windows: base.windows,
                    rows: componentRows(r.parts, r.delta), caveats: caveats,
-                   chart: chart, sim: simReport };
+                   chart: chart, sim: simReport, paired: paired };
   bw.refresh(panel);
 }
 

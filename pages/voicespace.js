@@ -386,3 +386,78 @@ function vsRenderChart(r, title, subtitle) {
   p.push('</svg>');
   return p.join('');
 }
+
+
+/* ---- the overlap rail ----
+   The piece a single chart cannot show: every reading on ONE scale, so overlapping
+   intervals are the first thing the eye lands on rather than something a careful reader
+   reconstructs from two separate pictures.
+
+   On the compare page the two readings are the reference's own passages and the
+   candidate — which makes the rail answer the actual question: is this candidate
+   distinguishable from how much the reference already varies against itself? */
+
+function vsOverlap(a, b) {
+  if (!(a.interval_reliable && b.interval_reliable)) return NaN;
+  return Math.min(a.high, b.high) - Math.max(a.low, b.low);
+}
+
+/* Both readings, scored the same way — which is the only way the comparison means
+   anything. Two traps, both of which produced confident nonsense before being fixed:
+
+   1. Reference windows scored leave-one-out (each against the other N-1) while the
+      candidate was scored against all N. The reference is then handicapped, and looks
+      *less* like itself than a total stranger does.
+   2. Reference scored per window (~300 words) while the candidate was scored whole
+      (~600+). Longer text has steadier coordinates and sits closer to any centroid, so
+      the candidate wins on length alone.
+
+   So: for every held-out reference window we build the same reduced region, and score
+   BOTH that window and each candidate WINDOW against it. Same reference size, same
+   construction, same text length on both sides. */
+function vsPairedReadings(refWindows, candidate, population) {
+  if (refWindows.length < 3) return null;
+  var candWindows = vsWindows(candidate);
+  if (!candWindows.length) candWindows = [candidate];
+
+  var selfs = [], cands = [];
+  refWindows.forEach(function (w, i) {
+    var rest = refWindows.filter(function (_, j) { return j !== i; });
+    var region = vsFitRegion('rest', rest, population);
+    var score = function (text) {
+      var per = vsAxisSimilarity(vsStandardize(population, text), region);
+      return 100 * VS_AXIS_NAMES.reduce(function (a, k) { return a + per[k]; }, 0)
+             / VS_AXIS_NAMES.length;
+    };
+    selfs.push(score(w));
+    candWindows.forEach(function (cw) { cands.push(score(cw)); });
+  });
+  var band = function (vals, name) {
+    var sorted = vals.slice().sort(function (a, b) { return a - b; });
+    return { voice: name,
+             overall: vals.reduce(function (a, b) { return a + b; }, 0) / vals.length,
+             low: vsPercentile(sorted, 0.05), high: vsPercentile(sorted, 0.95),
+             confidence: 0.9, windows: vals.length, words: 0,
+             interval_reliable: vals.length >= 3, axes: {} };
+  };
+  return { self: band(selfs, 'reference'), candidate: band(cands, 'candidate') };
+}
+
+function vsRailRow(label, sub, r) {
+  var lo = r.low, hi = r.high, pt = Math.min(Math.max(r.overall, 0), 100);
+  var ci = r.interval_reliable ? lo.toFixed(0) + '\u2013' + hi.toFixed(0) : 'no interval';
+  return { t: 'div', a: { class: 'rv_rrow' }, c: [
+    { t: 'div', a: { class: 'rv_rlabel' }, c: [
+      { t: 'span', c: label },
+      { t: 'span', a: { class: 'rv_rsub' }, c: sub } ]},
+    { t: 'div', a: { class: 'rv_rtrack', role: 'img',
+                     'aria-label': label + ': ' + pt.toFixed(0) + ' of 100, interval ' + ci }, c: [
+      r.interval_reliable
+        ? { t: 'span', a: { class: 'rv_rband',
+              style: bw.s({ left: lo + '%', width: Math.max(hi - lo, 0.6) + '%' }) } }
+        : '',
+      { t: 'span', a: { class: 'rv_rpoint', style: bw.s({ left: pt + '%' }) } } ]},
+    { t: 'div', a: { class: 'rv_rnum' }, c: [
+      { t: 'b', c: pt.toFixed(0) }, { t: 'span', c: ci } ]}
+  ]};
+}

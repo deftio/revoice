@@ -1,6 +1,8 @@
 [project]
 name = "revoice"
-version = "0.1.8"
+# The version lives in revoice/__init__.py and is read from there — one source of
+# truth for the running code, the package metadata, the website and the docs.
+dynamic = ["version"]
 description = "Rewrite documents in your own voice. Register transfer within one author, structure preserved."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -28,6 +30,9 @@ revoice = "revoice.cli:app"
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+version = { attr = "revoice.__version__" }
 
 [tool.setuptools.packages.find]
 include = ["revoice*"]

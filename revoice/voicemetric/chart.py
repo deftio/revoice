@@ -191,3 +191,220 @@ def render(report: dict, title: str = "", subtitle: str = "") -> str:
         f'{report["windows"]} document windows.</text>')
     add("</svg>")
     return "\n".join(p)
+
+
+# ---------- the full report ----------
+
+
+def overlap(a: dict, b: dict) -> float:
+    """Points of overlap between two reports' confidence intervals.
+
+    The number that decides whether a difference means anything. Two samples can differ
+    by 9 points and still have intervals sharing 14 — at which point the ordering is not
+    evidence, and a bare comparison of the two scores is actively misleading.
+    """
+    if not (a["interval_reliable"] and b["interval_reliable"]):
+        return float("nan")
+    return min(a["high"], b["high"]) - max(a["low"], b["low"])
+
+
+def worst_overlap(reports: list[dict]) -> tuple[dict, dict, float] | None:
+    """The pair whose intervals overlap most — the comparison least able to bear weight."""
+    worst = None
+    for i, a in enumerate(reports):
+        for b in reports[i + 1:]:
+            ov = overlap(a, b)
+            if ov == ov and (worst is None or ov > worst[2]):
+                worst = (a, b, ov)
+    return worst
+
+
+_PAGE_CSS = """
+:root {
+  --paper:#fbfbfc; --ink:#1b1f24; --muted:#5f6873; --panel:#f2f4f7; --rule:#dde1e7;
+  --accent:#2f6f9f; --warn:#c98a2b; --band:#9fc0da;
+  --vc-ink:#1b1f24; --vc-muted:#5f6873; --vc-rule:#dde1e7; --vc-bg:transparent;
+  --vc-panel:#eef1f5; --vc-near:#2f6f9f; --vc-far:#c98a2b; --vc-band:#9fc0da;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper:#14171b; --ink:#e6e8ec; --muted:#98a2ae; --panel:#1d2126; --rule:#2c323a;
+    --accent:#6ea8d4; --warn:#e0a94a; --band:#3d5f7d;
+    --vc-ink:#e6e8ec; --vc-muted:#98a2ae; --vc-rule:#2c323a; --vc-bg:transparent;
+    --vc-panel:#20252b; --vc-near:#6ea8d4; --vc-far:#e0a94a; --vc-band:#3d5f7d;
+  }
+}
+:root[data-theme="dark"] {
+  --paper:#14171b; --ink:#e6e8ec; --muted:#98a2ae; --panel:#1d2126; --rule:#2c323a;
+  --accent:#6ea8d4; --warn:#e0a94a; --band:#3d5f7d;
+  --vc-ink:#e6e8ec; --vc-muted:#98a2ae; --vc-rule:#2c323a; --vc-bg:transparent;
+  --vc-panel:#20252b; --vc-near:#6ea8d4; --vc-far:#e0a94a; --vc-band:#3d5f7d;
+}
+*{box-sizing:border-box}
+body{background:var(--paper);color:var(--ink);margin:0;padding:0 1.25rem 4rem;
+  font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+.wrap{max-width:920px;margin:0 auto}
+header{border-bottom:2px solid var(--ink);padding:2.2rem 0 1rem;margin-bottom:1.5rem}
+.eyebrow{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.72rem;
+  letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:0 0 .5rem}
+h1{font-size:1.7rem;font-weight:600;letter-spacing:-.015em;margin:0 0 .5rem;text-wrap:balance}
+.standfirst{margin:0;max-width:62ch;color:var(--muted)}
+.specs{display:flex;flex-wrap:wrap;gap:0 2rem;margin-top:1rem;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.75rem;color:var(--muted)}
+.specs b{color:var(--ink);font-weight:500}
+h2{font-size:1.05rem;font-weight:600;margin:2.4rem 0 .35rem}
+.lede{margin:0 0 1.1rem;color:var(--muted);max-width:64ch}
+p{max-width:64ch}
+.rail{background:var(--panel);border:1px solid var(--rule);border-radius:6px;
+  padding:1.2rem 1.3rem 1rem;display:flex;flex-direction:column;gap:.8rem}
+.rrow{display:grid;grid-template-columns:minmax(0,15rem) 1fr 5.5rem;gap:1rem;align-items:center}
+.rlabel{display:flex;flex-direction:column;min-width:0}
+.rsub{font-size:.78rem;color:var(--muted)}
+.rtrack{position:relative;height:20px;background:var(--paper);border:1px solid var(--rule);
+  border-radius:3px}
+.rband{position:absolute;top:0;bottom:0;background:var(--band);opacity:.85;border-radius:2px}
+.rpoint{position:absolute;top:-3px;bottom:-3px;width:2.5px;background:var(--ink)}
+.rnum{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right;line-height:1.25;
+  font-variant-numeric:tabular-nums}
+.rnum b{font-size:1rem;font-weight:600}
+.rnum span{display:block;font-size:.72rem;color:var(--muted)}
+.rscale{display:grid;grid-template-columns:minmax(0,15rem) 1fr 5.5rem;gap:1rem;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.68rem;color:var(--muted)}
+.rticks{display:flex;justify-content:space-between}
+.verdict{margin-top:.85rem;padding-top:.8rem;border-top:1px solid var(--rule);
+  display:flex;gap:.7rem;align-items:baseline;flex-wrap:wrap}
+.flag{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.72rem;
+  letter-spacing:.08em;text-transform:uppercase;color:var(--warn);border:1px solid var(--warn);
+  border-radius:3px;padding:.12rem .45rem;white-space:nowrap}
+.verdict p{margin:0;font-size:.9rem;color:var(--muted);max-width:58ch}
+figure{margin:1.5rem 0 0;padding:0;border-top:1px solid var(--rule)}
+figcaption{padding:1rem 0 .3rem}
+figcaption h3{margin:0;font-size:.97rem;font-weight:600}
+figcaption p{margin:.15rem 0 0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:.74rem;color:var(--muted)}
+.scroll{overflow-x:auto}
+svg{display:block;max-width:100%;height:auto}
+dl{display:grid;grid-template-columns:minmax(0,11rem) 1fr;gap:.5rem 1.3rem;margin:1rem 0 0}
+dt{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.78rem;color:var(--muted)}
+dd{margin:0;font-size:.93rem}
+.note{background:var(--panel);border-left:3px solid var(--accent);border-radius:0 4px 4px 0;
+  padding:.85rem 1.05rem;margin:1.3rem 0}
+.note p{margin:0;font-size:.92rem}
+footer{margin-top:2.6rem;padding-top:1rem;border-top:1px solid var(--rule);
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.72rem;color:var(--muted)}
+@media(max-width:640px){.rrow,.rscale{grid-template-columns:1fr;gap:.3rem}.rnum{text-align:left}}
+"""
+
+
+def report(items: list[tuple[str, str, dict]], voice: str, engine: str = "",
+           title: str = "", standfirst: str = "") -> str:
+    """A complete, standalone HTML report for several samples against one voice.
+
+    `items` is (label, sublabel, similarity_report). The per-sample charts come from
+    `render`; what this adds is the part a single chart cannot show — **every reading on
+    one shared scale**, so overlapping intervals are the first thing the eye lands on
+    rather than something a careful reader works out from two separate pictures.
+
+    Self-contained: no scripts, no network, no fonts to fetch. It opens from a file, in
+    an email, or in five years.
+    """
+    reports = [r for _, _, r in items]
+    worst = worst_overlap(reports)
+    ordered = sorted(items, key=lambda it: -it[2]["overall"])
+
+    rails = []
+    for label, sub, r in ordered:
+        lo, hi, pt = r["low"], r["high"], r["overall"]
+        band = (f'<span class="rband" style="left:{lo}%;width:{max(hi - lo, 0.6):.2f}%"></span>'
+                if r["interval_reliable"] else "")
+        ci = f"{lo:.0f}–{hi:.0f}" if r["interval_reliable"] else "no interval"
+        rails.append(
+            f'<div class="rrow">'
+            f'<div class="rlabel"><span>{_esc(label)}</span>'
+            f'<span class="rsub">{_esc(sub)}</span></div>'
+            f'<div class="rtrack" role="img" aria-label="{_esc(label)}: {pt:.0f} of 100, '
+            f'interval {ci}">{band}'
+            f'<span class="rpoint" style="left:{min(max(pt, 0), 100):.2f}%"></span></div>'
+            f'<div class="rnum"><b>{pt:.0f}</b><span>{ci}</span></div></div>')
+
+    if worst and worst[2] > 0:
+        a, b, ov = worst
+        gap = abs(a["overall"] - b["overall"])
+        verdict = (
+            f'<span class="flag">{ov:.1f} pts overlap</span>'
+            f'<p>The closest pair differ by {gap:.1f} points and their intervals overlap by '
+            f'{ov:.1f}, so that ordering is not evidence. Read the axes below, not the '
+            f'headline numbers.</p>')
+    elif worst:
+        verdict = ('<span class="flag">no overlap</span>'
+                   '<p>No two intervals overlap, so the ordering above is supported by the '
+                   'measurement rather than by the point estimates alone.</p>')
+    else:
+        verdict = ('<span class="flag">no intervals</span>'
+                   '<p>Too few paragraphs to resample, so none of these readings carries a '
+                   'measured uncertainty. Treat them as impressions.</p>')
+
+    figures = []
+    for label, sub, r in ordered:
+        ci = (f"{r['confidence']:.0%} interval" if r["interval_reliable"] else "no interval")
+        figures.append(
+            f'<figure><figcaption><h3>{_esc(label)}</h3>'
+            f'<p>{_esc(sub)} · {r["words"]} words · {r["windows"]} windows · {ci}</p>'
+            f'</figcaption><div class="scroll">'
+            f'{render(r, title=f"{label} vs voice “{voice}”", subtitle="")}</div></figure>')
+
+    head = _esc(title or f"Voice similarity — {voice}")
+    stand = _esc(standfirst or (
+        f"{len(items)} sample{'s' if len(items) != 1 else ''} measured against the voice "
+        f"“{voice}”. Each reading is a point estimate and a bootstrap interval, because on "
+        "this measure the interval is usually the part that decides what you may conclude."))
+    n_axes = len(AXES)
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{head}</title><style>{_PAGE_CSS}</style></head><body><div class="wrap">
+<header>
+  <p class="eyebrow">revoice · voicemetric</p>
+  <h1>{head}</h1>
+  <p class="standfirst">{stand}</p>
+  <div class="specs"><span>axes <b>{n_axes}</b></span>
+    <span>samples <b>{len(items)}</b></span>
+    <span>interval <b>bootstrap over document windows</b></span>
+    {f'<span>engine <b>{_esc(engine)}</b></span>' if engine else ''}</div>
+</header>
+
+<h2>Every reading on one scale</h2>
+<p class="lede">Point estimate in black; the shaded band is where the score lands when the
+document's own paragraphs are resampled.</p>
+<div class="rail">
+{chr(10).join(rails)}
+  <div class="rscale"><span></span><span class="rticks"><span>0</span><span>25</span>
+    <span>50</span><span>75</span><span>100</span></span><span></span></div>
+  <div class="verdict">{verdict}</div>
+</div>
+
+<h2>Axis by axis</h2>
+<p class="lede">Bar length is the size of the difference, side is its direction, the number
+is per-axis similarity, and the whisker is the bootstrap interval.</p>
+{chr(10).join(figures)}
+
+<h2>How the interval is produced</h2>
+<dl>
+  <dt>resampling unit</dt><dd>Paragraph windows of roughly 220 words — about the smallest
+    span at which paragraph shape and rhythm mean anything.</dd>
+  <dt>procedure</dt><dd>Coordinates are computed once per window, then windows are
+    resampled with replacement and the statistic recomputed. The band is the 5th to 95th
+    percentile.</dd>
+  <dt>what it answers</dt><dd>How much the score would move given a different few pages of
+    the same document — not how likely it is that the author is the right one.</dd>
+  <dt>when it is absent</dt><dd>Under three windows there is nothing to resample. The
+    report says so rather than drawing a band it cannot support.</dd>
+</dl>
+
+<div class="note"><p><strong>What this is not.</strong> It is not an authorship test.
+Measured across 70 authors in 11 genres with same-genre negatives, the underlying metric
+reaches AUC ≈ 0.69 — useful for noticing that an edit moved a document's register, not for
+deciding who wrote something.</p></div>
+
+<footer>Generated by revoice · charts are dependency-free SVG · no scripts, no network</footer>
+</div></body></html>"""

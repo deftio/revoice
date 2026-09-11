@@ -71,6 +71,38 @@ bw.injectCSS(bw.css({
   '.rv_version': { fontFamily: 'Menlo,Consolas,monospace', fontSize: '0.72em',
                    color: P.light.darkText, marginLeft: '1.1em', whiteSpace: 'nowrap',
                    alignSelf: 'center', cursor: 'help' },
+  /* the overlap rail — every reading on one scale, so overlapping intervals are the
+     first thing seen rather than something reconstructed from separate pictures */
+  '.rv_rail': { background: P.surfaceAlt, border: '1px solid ' + P.light.border,
+                borderRadius: L.radius.card, padding: '1.1em 1.2em 0.9em',
+                display: 'flex', flexDirection: 'column', gap: '0.75em' },
+  '.rv_rrow': { display: 'grid', gridTemplateColumns: 'minmax(0,13rem) 1fr 5rem',
+                gap: '0.9em', alignItems: 'center' },
+  '.rv_rlabel': { display: 'flex', flexDirection: 'column', minWidth: '0' },
+  '.rv_rsub': { fontSize: '0.78em', color: P.light.darkText },
+  '.rv_rtrack': { position: 'relative', height: '20px', background: P.background,
+                  border: '1px solid ' + P.light.border, borderRadius: '3px' },
+  '.rv_rband': { position: 'absolute', top: '0', bottom: '0', background: P.primary.border,
+                 opacity: '0.9', borderRadius: '2px' },
+  '.rv_rpoint': { position: 'absolute', top: '-3px', bottom: '-3px', width: '2.5px',
+                  background: P.dark.base },
+  '.rv_rnum': { fontFamily: 'Menlo,Consolas,monospace', textAlign: 'right',
+                lineHeight: '1.25', fontVariantNumeric: 'tabular-nums' },
+  '.rv_rnum b': { fontSize: '1em', fontWeight: '600' },
+  '.rv_rnum span': { display: 'block', fontSize: '0.72em', color: P.light.darkText },
+  '.rv_rscale': { display: 'grid', gridTemplateColumns: 'minmax(0,13rem) 1fr 5rem',
+                  gap: '0.9em', fontFamily: 'Menlo,Consolas,monospace',
+                  fontSize: '0.68em', color: P.light.darkText },
+  '.rv_rticks': { display: 'flex', justifyContent: 'space-between' },
+  '.rv_verdict': { marginTop: '0.8em', paddingTop: '0.75em',
+                   borderTop: '1px solid ' + P.light.border,
+                   display: 'flex', gap: '0.7em', alignItems: 'baseline', flexWrap: 'wrap' },
+  '.rv_flag': { fontFamily: 'Menlo,Consolas,monospace', fontSize: '0.72em',
+                letterSpacing: '0.08em', textTransform: 'uppercase', color: P.warning.base,
+                border: '1px solid ' + P.warning.base, borderRadius: '3px',
+                padding: '0.1em 0.45em', whiteSpace: 'nowrap' },
+  '.rv_verdict p': { margin: '0', fontSize: '0.9em', color: P.light.darkText,
+                     maxWidth: '58ch' },
   '.rv_wrap': { maxWidth: '1280px', margin: '0 auto', padding: '0 3rem' },
   '.rv_hero': { padding: '1.3em 0 0 0' },
 
@@ -198,3 +230,8 @@ function sitePage(active, contentKids) {
       c: [{ t: 'div', a: { class: 'rv_hero' } }].concat(contentKids).concat([siteFooter()]) }
   ]};
 }
+
+bw.injectCSS(bw.responsive('.rv_rrow', {
+  base: { gridTemplateColumns: '1fr', gap: '0.25em' },
+  md: { gridTemplateColumns: 'minmax(0,13rem) 1fr 5rem', gap: '0.9em' }
+}));

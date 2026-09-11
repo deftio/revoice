@@ -8,14 +8,19 @@ and revoice stamps it into the artefacts that outlive the code.
 """
 
 import json
+import re
+from pathlib import Path
 
 import pytest
+import tomllib
 import yaml
 
 import revoice.voicemetric as voicemetric
 from revoice import rubric
 from revoice.core.metrics import engine_of, load_baselines, load_calibration
 from revoice.core.rubrics import TEMPLATE
+
+ROOT = Path(__file__).parent.parent
 
 
 def _dims():
@@ -175,3 +180,48 @@ def test_doctor_reports_both_engines(learned_cwd):
     r = CliRunner().invoke(app, ["doctor"])
     assert "voicemetric" in r.output and voicemetric.signature() in r.output
     assert f"rubric      {rubric.version()}" in r.output
+
+
+# ---------- one version, one place ----------
+
+
+def test_the_version_is_declared_exactly_once_in_the_codebase():
+    """A version written twice is a version that will eventually be wrong in one of
+    them, silently: the package says one thing, the site says another, and a bug report
+    cites a build that never existed."""
+    import revoice
+
+    literal = re.escape(revoice.__version__)
+    hits = []
+    for path in list(ROOT.glob("*.toml")) + list((ROOT / "revoice").rglob("*.py")):
+        for i, line in enumerate(path.read_text().splitlines(), 1):
+            if re.search(rf'^\s*(?:__version__|version)\s*=\s*["\']{literal}["\']', line):
+                hits.append(f"{path.relative_to(ROOT)}:{i}")
+    assert len(hits) == 1 and hits[0].startswith("revoice/__init__.py"), (
+        "revoice's version literal must appear in exactly one place "
+        f"(revoice/__init__.py); found: {hits}")
+
+
+def test_pyproject_derives_its_version_rather_than_repeating_it():
+    data = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    assert "version" not in data["project"], \
+        "pyproject declares a literal version; it should be dynamic"
+    assert "version" in data["project"].get("dynamic", []), \
+        "pyproject should list 'version' as dynamic"
+    assert data["tool"]["setuptools"]["dynamic"]["version"] == {"attr": "revoice.__version__"}
+
+
+def test_the_installed_package_metadata_matches_the_runtime():
+    """The dynamic-version wiring is only correct if the built metadata agrees."""
+    from importlib.metadata import version as dist_version
+
+    import revoice
+
+    assert dist_version("revoice") == revoice.__version__
+
+
+def test_revoice_exposes_version_like_the_engines_do():
+    import revoice
+
+    assert revoice.version() == revoice.__version__
+    assert {revoice.version(), rubric.version(), voicemetric.version()}, "all three callable"

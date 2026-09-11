@@ -77,30 +77,46 @@ BSD-2-Clause. By contributing you agree your contributions are licensed the same
 
 ## Releasing
 
-`scripts/release.sh` cuts a release the way a person would: a pull request that CI must
-pass before anything is merged or published. Four steps, each opting into more, and
-nothing before `--pr` touches the remote.
+The version lives in **one place**: `__version__` in `revoice/__init__.py`.
+`pyproject.toml` reads it via setuptools' dynamic-version support, the site is generated
+from it, and `revoice --version` reports it. A version written twice is a version that
+will eventually be wrong in one of them, silently.
+
+`scripts/release.sh` **writes nothing to the repository.** Preparing a release is normal
+work you do and commit; releasing is mechanical and separate. If the release script
+edited code, what shipped would not be what was reviewed and tested.
+
+### Preparing
 
 ```bash
-./scripts/release.sh --patch            # verify + build, report what would happen
-./scripts/release.sh --patch --commit   # bump and commit on a release branch, locally
-./scripts/release.sh --patch --pr       # push the branch and open a PR into main
-./scripts/release.sh --patch --release  # wait for CI green, squash-merge, tag, publish
+# 1. bump the one source of truth
+$EDITOR revoice/__init__.py            # __version__ = "0.2.0"
+
+# 2. write the CHANGELOG section, dated (not "(unreleased)")
+$EDITOR CHANGELOG.md                   # ## 0.2.0 — 2026-09-08
+
+# 3. regenerate what embeds the version (the site prints it in the nav)
+python scripts/export_demo_baselines.py
+
+# 4. commit
+git commit -am "Prepare 0.2.0"
 ```
 
-Before running it, retitle the CHANGELOG's top section to `## X.Y.Z (unreleased)` for
-the version you intend to ship. The script refuses to release a version the changelog
-has no notes for, and refuses an empty section.
+### Shipping
 
-`--pr` and `--release` need the [GitHub CLI](https://cli.github.com) authenticated
-(`gh auth login`).
+```bash
+./scripts/release.sh                   # verify + test + build; touches nothing
+./scripts/release.sh --pr              # push the branch, open a PR into main
+./scripts/release.sh --release         # wait for CI green, squash-merge, tag, publish
+./scripts/release.sh --release --pypi  # ...and upload to PyPI (needs UV_PUBLISH_TOKEN)
+```
 
 ### What it checks, cheapest failure first
 
-1. the tag is free, the branch is known, `gh` is authenticated
-2. the CHANGELOG has real notes for exactly this version
-3. `pages/version.js`, `population.json` and `voices.json` regenerate — the site embeds
-   the version and the metric's signature, and a stale one ships a lie
+1. the tag is free, the tree is **clean** (it ships what is committed), `gh` is authed
+2. the CHANGELOG has dated, non-empty notes for exactly this version
+3. `revoice.__version__`, the packaged metadata, and the generated site files all agree —
+   `export_demo_baselines.py --check` verifies without writing
 4. privacy gate · ruff · pytest at 100% coverage · the voice-metric bench
 5. sdist **and** wheel build, then the wheel is installed into a throwaway venv and asked
    its version — the only check that catches a package that builds fine and is broken on
@@ -108,22 +124,22 @@ has no notes for, and refuses an empty section.
 6. **the CI run GitHub performs against the PR is green** — `--release` blocks on it and
    refuses to merge or publish if it is red
 
-Steps 1–5 run on your machine and are a fast filter, not the authority. Step 6 is the one
-that decides: a release whose only evidence is "it passed on my laptop" is what this
-script exists to prevent. Nothing before step 3 writes to your working tree, so a failed
-run leaves the repo exactly as it found it.
+Steps 1–5 run locally and are a fast filter, not the authority. Step 6 decides: a release
+whose only evidence is "it passed on my laptop" is what this exists to prevent.
 
-### What ends up on GitHub
+### What ends up published
 
 `main` only ever moves through a squash-merged PR. The merge commit is tagged `vX.Y.Z`,
-and a GitHub Release is published with the CHANGELOG section as its notes and **the wheel
-and sdist attached** — so the artefacts people download are the exact ones the script
-built and test-installed, not a rebuild. GitHub Pages rebuilds from `pages/` on the merge.
+and a GitHub Release carries the CHANGELOG section as its notes with **the wheel and
+sdist attached** — the exact artefacts the script built and test-installed, not a
+rebuild. PyPI is opt-in behind `--pypi` and confirms first, since a version cannot be
+re-uploaded. GitHub Pages rebuilds from `pages/` on the merge, and reports the version
+from the `version.js` committed with the release.
 
 ### The engine versions
 
-`revoice/rubric/` and `revoice/voicemetric/` carry their own version numbers and the
-release script does *not* touch them. Bump those by hand in their own `__init__.py` when
+`revoice/rubric/` and `revoice/voicemetric/` version themselves independently and the
+release script does not touch them. Bump those by hand in their own `__init__.py` when
 their behaviour changes — for `voicemetric` that particularly means a MINOR bump whenever
 the numbers move, which `signature()` reflects and `revoice status` then warns about for
 any pack built under the old one.

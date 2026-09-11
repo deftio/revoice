@@ -1,30 +1,74 @@
 # Changelog
 
+## 0.1.9 (unreleased)
+
+**The report the site and the tool both wanted.**
+
+### Added
+- **`revoice space --report out.html`** — the full standalone report, from the local
+  tool, for any number of samples against one voice:
+
+  ```bash
+  revoice space bench-corpus --against twain \
+    -t sample-a.md -t sample-b.md -t sample-c.md --report report.html
+  ```
+
+  `--text` is now repeatable. `chart.report()` builds it: masthead, the overlap rail,
+  a per-sample axis chart, and the method notes. Self-contained — no scripts, no network,
+  no fonts to fetch; it opens from a file, in an email, or in five years.
+- **The overlap rail**, in both the Python report and the compare page. Every reading on
+  ONE 0–100 scale with its interval drawn at the same weight as the estimate, plus
+  `chart.overlap()` / `chart.worst_overlap()` naming the least defensible comparison in
+  words. It is the piece a single chart cannot show, and it was the one part of the
+  hand-built prototype that had never made it into the codebase.
+- The CLI prints the same warning the rail does: *"closest pair overlaps by 13.2 points —
+  that ordering is not evidence"*, so nobody reads two numbers off stdout and draws a
+  conclusion the intervals forbid.
+- `pages/compare.html` now leads with the rail: the reference's own passages against the
+  candidate, which makes the page answer the question it should — *is this distinguishable
+  from how much the reference already varies on its own?*
+
+### Fixed — two ways the rail lied before it was right
+Both produced a confident result that was pure methodology, and both were visible only
+because putting the readings on one scale made them comparable:
+- The reference's windows were scored leave-one-out (each against the other N−1) while
+  the candidate was scored against all N. The reference was handicapped and looked *less*
+  like itself than a stranger did.
+- The reference was scored per window (~300 words) while the candidate was scored whole
+  (~600+). Longer text has steadier coordinates and sits closer to any centroid, so the
+  candidate won on length alone.
+
+  Now every held-out reference window builds the same reduced region, and both that
+  window and each candidate *window* are scored against it: same reference size, same
+  construction, same text length on both sides. With that fixed, Twain-vs-Twain and
+  Twain-vs-Darwin both come back overlapping — which is the honest answer at AUC 0.69,
+  and much better than confidently asserting something false.
+
 ## 0.1.8 (unreleased)
 
 **The site shows the real metric; there is now one command to ship it.**
 
 ### Added
-- **`scripts/release.sh`** — cuts a release the way a person would: bump, verify, build,
-  then ship through a **pull request that CI must pass** before anything merges or
-  publishes. Four rungs, each opting into more, and nothing before `--pr` touches the
-  remote: `--commit` (local branch), `--pr` (push + open PR), `--release` (wait for CI
-  green, squash-merge, tag, publish). Every rung confirms first.
+- **`scripts/release.sh`** — ships what is already committed. It **writes nothing to the
+  repository**: no version bump, no changelog edit, no regeneration. Preparing a release
+  is normal work you commit; releasing is mechanical and separate, so the commit CI
+  validates is byte-for-byte the commit that gets tagged and published.
+  - `./scripts/release.sh` verifies, tests and builds, touching nothing. `--pr` pushes
+    the branch and opens a PR. `--release` waits for CI, squash-merges, tags, and
+    publishes a GitHub Release with the wheel and sdist attached. `--pypi` is opt-in.
   - **`--release` blocks on the CI run GitHub performs against the PR**, not on the local
     checks. Those are a fast filter; a release whose only evidence is "it passed on my
-    laptop" is the thing this script exists to prevent. Red CI leaves the PR open and
-    publishes nothing.
-  - `main` only ever moves through a squash-merged PR; the merge commit is tagged and a
-    **GitHub Release is published with the wheel and sdist attached**, so what people
-    download is the artefact the script built and test-installed.
-  - Refuses to release a version the CHANGELOG has no notes for, or an empty section.
-  - Regenerates `pages/version.js`, `population.json` and `voices.json`, because the
-    site embeds the version and the metric signature and a stale one ships a lie.
-  - **Installs the built wheel into a throwaway venv and asks its version** — the only
-    check that catches a package that builds fine and is broken on arrival, and it
-    verifies both engine READMEs and the GUI actually made it into the wheel.
-  - Ordered cheapest-failure-first, and nothing is written to the working tree until
-    every cheap gate has passed, so a failed run leaves the repo as it found it.
+    laptop" is the thing this prevents. Red CI leaves the PR open and publishes nothing.
+  - Refuses a dirty tree, a reused tag, a version the CHANGELOG has no dated notes for,
+    and stale generated site files.
+- **The version now lives in exactly one place**: `__version__` in `revoice/__init__.py`.
+  `pyproject.toml` declares `dynamic = ["version"]` and reads that attribute, so the
+  packaged metadata cannot disagree with the running code, and the site, docs and release
+  tag all derive from the same line. A version written twice is one that will eventually
+  be wrong in one of them, silently.
+- `revoice.version()`, matching `rubric.version()` and `voicemetric.version()`.
+- `scripts/export_demo_baselines.py --check` — verifies the generated site files are
+  current without writing, so the release can check rather than mutate.
 - `tests/test_release_script.py` — the guards, plus assertions read from the script's
   own source that it cannot push without `--push` and never runs fewer gates than CI.
 - `CONTRIBUTING.md` documents the release flow, including that the two engine versions
