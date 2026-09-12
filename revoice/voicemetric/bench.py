@@ -49,6 +49,7 @@ untouched, while wrongly leaving at most that fraction of foreign text untouched
 
 from __future__ import annotations
 
+import math
 import random
 import re
 import statistics
@@ -62,7 +63,15 @@ from revoice.voicemetric.baseline import (
     baseline_from_texts,
     score_text,
 )
-from revoice.voicemetric.verify import auc, cllr_report, eer, fit_weights, tpr_at_fpr
+from revoice.voicemetric.space import AXIS_NAMES, coordinates
+from revoice.voicemetric.verify import (
+    auc,
+    c_at_1,
+    cllr_report,
+    eer,
+    fit_weights,
+    tpr_at_fpr,
+)
 
 # Query lengths in words. The first three bracket revoice's real span sizes; the last
 # three reach up toward the regime classical stylometry was validated in.
@@ -339,7 +348,46 @@ def _metrics(target: list[float], nontarget: list[float], max_fpr: float) -> dic
         "n_different": len(nontarget),
     }
     out.update(cllr_report(target, nontarget))
+    out["decision"] = _decision_quality(target, nontarget)
     return out
+
+
+def _decision_quality(target: list[float], nontarget: list[float]) -> dict:
+    """Does letting the system abstain make its decisions better? c@1 answers that.
+
+    AUC and EER both grade a ranker. This engine is not asked to rank, it is asked to
+    decide — and its most common correct answer is "these overlap, I cannot call it".
+    c@1 is the only measure here that can score that answer as anything but a coin flip.
+
+    The sweep widens an abstention band around the decision threshold and reports the
+    band that scores best. If the best band is 0, abstaining never helps and the system
+    may as well always answer; if a wide band wins, the scores carry real information
+    about their own reliability and we should be using it. `abstain_rate` is the price.
+
+    The threshold maximises accuracy on these same trials, so it is an oracle and these
+    figures are an upper bound — the same optimism `tpr_at_fpr` already carries, kept
+    consistent rather than quietly mixed.
+    """
+    scores = sorted(set(target + nontarget))
+    if len(scores) < 2:
+        return {"threshold": None, "c_at_1": float("nan"), "accuracy": float("nan"),
+                "band": 0.0, "abstain_rate": 0.0}
+    cuts = [(a + b) / 2 for a, b in zip(scores, scores[1:], strict=False)]
+    threshold = max(cuts, key=lambda c: c_at_1(target, nontarget, c)["accuracy"])
+
+    all_scores = target + nontarget
+    mean = sum(all_scores) / len(all_scores)
+    sd = (sum((s - mean) ** 2 for s in all_scores) / len(all_scores)) ** 0.5
+    best = max((c_at_1(target, nontarget, threshold, f * sd) for f in (0.0, 0.1, 0.25, 0.5, 1.0)),
+               key=lambda r: r["c_at_1"])
+    n = len(all_scores)
+    return {
+        "threshold": round(threshold, 3),
+        "c_at_1": best["c_at_1"],
+        "accuracy": c_at_1(target, nontarget, threshold)["accuracy"],
+        "band": round(best["band"], 3),
+        "abstain_rate": round(best["abstained"] / n, 4),
+    }
 
 
 def _macro(by_length: dict, keys=("auc", "eer", "tpr_at_fpr", "cllr", "cllr_min", "cllr_cal")) -> dict:
@@ -466,6 +514,147 @@ def content_control(controlled: dict, leaky: dict) -> dict:
             if a_strict == a_strict and a_loose == a_loose else float("nan"),
         }
     return out
+
+
+def _pearson(xs: list[float], ys: list[float]) -> float:
+    n = len(xs)
+    mx, my = sum(xs) / n, sum(ys) / n
+    num = sum((x - mx) * (y - my) for x, y in zip(xs, ys, strict=True))
+    dx = sum((x - mx) ** 2 for x in xs) ** 0.5
+    dy = sum((y - my) ** 2 for y in ys) ** 0.5
+    return num / (dx * dy) if dx > 1e-12 and dy > 1e-12 else float("nan")
+
+
+def _truncate(words: list[str], text: str, n: int, cut: str) -> str:
+    """Take roughly `n` words, the way the caller's real pipeline would take them."""
+    if cut == "words":
+        return " ".join(words[:n])
+    out, count = [], 0
+    for para in re.split(r"\n\s*\n", text):
+        para = para.strip()
+        if not para:
+            continue
+        out.append(para)
+        count += len(para.split())
+        if count >= n:
+            break
+    return "\n\n".join(out)
+
+
+def length_sensitivity(docs: list[Doc], lengths=DEFAULT_LENGTHS,
+                       min_words: int = 0, cut: str = "words") -> dict:
+    """How much does each axis move when you change only HOW MUCH text you feed it?
+
+    This exists because of a claim this package used to make about itself. `yules_k`
+    asserted, with no source, that Yule's K "does NOT drift with text length". Tweedie &
+    Baayen (1998) measured the whole family of richness constants and found none of them
+    constant. The docstring is fixed; this function is the part that stops us doing it
+    again, by measuring the residual drift instead of arguing about it.
+
+    Method: take one document, truncate it to each length in the grid, and read the
+    axes off each truncation. Everything except the amount of text is held fixed — same
+    author, same work, same topic, same register — so any movement across the row is a
+    length artifact and nothing else. Per-axis Pearson r against log(words), averaged
+    over documents.
+
+    Two numbers per axis:
+
+      r      within-document correlation with log length. |r| near 1 means the axis is
+             substantially reporting how much text it was given.
+      drift  the shift from the shortest length to the longest, in units of the axis's
+             own across-document spread. This is the one that matters operationally:
+             drift of 1.0 means changing the sample length moves the axis as far as
+             changing the author does, and any comparison across unequal lengths is
+             then measuring the inequality.
+
+    `cut` picks which of the two regimes to measure, and they are not the same:
+
+      "words"       take the first n words, splitting paragraphs wherever n lands. This
+                    is what `bench._window` does to build trials and what revoice does
+                    to a span, so it is the regime the published AUC figures live in.
+      "paragraphs"  take whole paragraphs until n is reached — what `space.windows` does
+                    for the page and the report.
+
+    Run both. The first time this was run, the difference exposed something nobody had
+    claimed and nobody had checked: under "words" the paragraph-shape axes are pure
+    length readings, because joining a span's words on spaces leaves exactly one
+    paragraph. They are not wrong on the page, where windows are cut on paragraph
+    boundaries; they are dead in the bench, where they are not.
+
+    `min_words` skips documents too short to fill the grid; leaving it at 0 includes
+    every document at every length it can actually reach.
+    """
+    if cut not in ("words", "paragraphs"):
+        raise ValueError("cut must be 'words' or 'paragraphs'")
+    grid = sorted(lengths)
+    logs = [math.log(n) for n in grid]
+
+    per_axis_r: dict[str, list[float]] = {a: [] for a in AXIS_NAMES}
+    rows: dict[str, list[list[float]]] = {a: [] for a in AXIS_NAMES}
+    used = 0
+    for doc in docs:
+        words = doc.text.split()
+        if len(words) < max(min_words, grid[0]):
+            continue
+        reachable = [n for n in grid if n <= len(words)]
+        if len(reachable) < 2:
+            continue
+        used += 1
+        coords = [coordinates(_truncate(words, doc.text, n, cut)) for n in reachable]
+        xs = logs[:len(reachable)]
+        for a in AXIS_NAMES:
+            ys = [c[a] for c in coords]
+            r = _pearson(xs, ys)
+            # A constant axis has no correlation with length, which is the BEST possible
+            # result here and must not be reported as unmeasurable. `_pearson` returns
+            # nan when its input does not vary; for this diagnostic that case means the
+            # axis did not move when the length did, so it is 0.0.
+            if r != r and max(ys) == min(ys):
+                r = 0.0
+            if r == r:
+                per_axis_r[a].append(r)
+            if len(reachable) == len(grid):
+                rows[a].append(ys)
+
+    axes = {}
+    for a in AXIS_NAMES:
+        rs = per_axis_r[a]
+        full = rows[a]
+        spread = 0.0
+        drift = float("nan")
+        if full:
+            # spread ACROSS documents at the longest length: the scale a real difference
+            # between two writers would be measured on
+            longest = [row[-1] for row in full]
+            m = sum(longest) / len(longest)
+            spread = (sum((v - m) ** 2 for v in longest) / len(longest)) ** 0.5
+            shifts = [row[-1] - row[0] for row in full]
+            mean_shift = sum(shifts) / len(shifts)
+            drift = mean_shift / spread if spread > 1e-12 else float("nan")
+        axes[a] = {
+            "r": round(sum(rs) / len(rs), 4) if rs else float("nan"),
+            "drift": round(drift, 3) if drift == drift else drift,
+            "n_docs": len(rs),
+        }
+
+    ranked = sorted(AXIS_NAMES, key=lambda a: -abs(axes[a]["r"]) if axes[a]["r"] == axes[a]["r"] else 0)
+    return {"lengths": grid, "n_docs": used, "cut": cut, "axes": axes, "worst_first": ranked}
+
+
+def render_length_sensitivity(result: dict) -> str:
+    """The drift table, worst axis first."""
+    out = [f"length sensitivity — {result['n_docs']} docs over "
+           f"{result['lengths'][0]}..{result['lengths'][-1]} words, cut on "
+           f"{result.get('cut', 'words')}", ""]
+    out.append(f"  {'axis':<24}{'r(log n)':>10}{'drift (sd)':>13}")
+    for a in result["worst_first"]:
+        e = result["axes"][a]
+        r, d = e["r"], e["drift"]
+        flag = "  <-- length-dominated" if r == r and abs(r) >= 0.8 else ""
+        out.append(f"  {a:<24}{r:>10.3f}{(f'{d:+.2f}' if d == d else 'n/a'):>13}{flag}")
+    out.append("")
+    out.append("  r is within-document: the same text, truncated. Anything it moves is length.")
+    return "\n".join(out)
 
 
 def verdict(result: dict, max_fpr: float = DEFAULT_MAX_FPR) -> list[str]:

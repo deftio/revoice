@@ -493,6 +493,86 @@ def bench(
 
 
 @app.command()
+def rewrite_score(
+    source: Path = typer.Argument(..., help="The text before the rewrite."),
+    rewrite: Path = typer.Argument(..., help="The text after it."),
+    corpus: Path = typer.Option(Path("bench-corpus"), "--corpus",
+                                help="Corpus root, for the population and the voices."),
+    against: str = typer.Option(..., "--against",
+                                help="The voice the rewrite was aiming at."),
+    replicates: int = typer.Option(400, "--replicates",
+                                   help="Bootstrap resamples behind the interval."),
+    as_json: bool = typer.Option(False, "--json"),
+):
+    """Did a rewrite move toward a voice, and did it keep the meaning? [bold]Two numbers, never merged.[/bold]
+
+    [green]space[/green] answers an absolute question — how close is this text to that
+    voice — and answers it weakly: AUC ~0.69 across 70 authors. This asks a paired
+    question instead. Source and rewrite share their topic, length, genre and content,
+    so every confound that makes absolute scoring hard cancels in the difference, and
+    what is left is the thing you actually wanted to know.
+
+      [bold]style[/bold]     signed movement toward the voice, with an interval on the
+                movement. "Moved" only when that interval clears zero.
+      [bold]meaning[/bold]   whether the claims survived: figures, proper nouns, negation,
+                hedging, content words. Weakest family wins, and it VETOES —
+                a rewrite that nailed the voice while dropping a third of the
+                numbers has not half-succeeded.
+
+    Example:
+      [green]revoice rewrite-score draft.md revised.md --against twain[/green]
+    """
+    from revoice.voicemetric.bench import load_corpus
+    from revoice.voicemetric.space import Population, VoiceRegion
+    from revoice.voicemetric.transfer import grade
+
+    docs = list(load_corpus(corpus))
+    if not docs:
+        typer.secho(f"no documents found under {corpus}", fg="red")
+        raise typer.Exit(1)
+    pop = Population.fit([d.text for d in docs])
+    texts = [d.text for d in docs if d.author == against]
+    if len(texts) < 2:
+        have = ", ".join(sorted({d.author for d in docs}))
+        typer.secho(f"'{against}' needs at least 2 documents to have a spread (have: {have})",
+                    fg="red")
+        raise typer.Exit(1)
+    region = VoiceRegion.fit(against, texts, pop)
+
+    g = grade(source.read_text(), rewrite.read_text(), region, pop, replicates=replicates)
+    if as_json:
+        typer.echo(json.dumps(g, indent=2))
+        return
+
+    s, m = g["style"], g["meaning"]
+    typer.secho(f"{source.name} \u2192 {rewrite.name}, against '{against}'", bold=True)
+    typer.echo("")
+    typer.secho("  STYLE", bold=True)
+    typer.echo(f"    source {s['source']:.1f}   rewrite {s['rewrite']:.1f}   "
+               f"delta {s['delta']:+.1f}")
+    if s["interval_reliable"]:
+        typer.echo(f"    interval [{s['low']:+.1f}, {s['high']:+.1f}] at "
+                   f"{s['confidence']:.0%} \u00b7 closed {s['closed']:.0%} of the gap")
+    else:
+        typer.secho("    no interval: under 3 windows on one side, so the movement "
+                    "cannot be bounded", fg="yellow")
+    typer.echo("")
+    typer.secho("  MEANING", bold=True)
+    # Only flag a weakest family when one actually trails; with everything at 1.00 the
+    # arrow would point at whichever family happened to sort first and read as a fault.
+    trailing = min(m["families"].values()) < max(m["families"].values())
+    for family, value in m["families"].items():
+        mark = "  <-- weakest" if trailing and family == m["weakest"] else ""
+        colour = "red" if value < g["meaning_floor"] else None
+        typer.secho(f"    {family:<12}{value:>6.2f}{mark}", fg=colour)
+    typer.echo(f"    ({m['method']})")
+    typer.echo("")
+    typer.secho(f"  {g['verdict']}", bold=True,
+                fg="red" if m["overall"] < g["meaning_floor"] else
+                   ("green" if s["moved"] else "yellow"))
+
+
+@app.command()
 def space(
     corpus: Path = typer.Argument(Path("bench-corpus"),
                                   help="Corpus root: <group>/training-data/* (voice-pack layout)."),
@@ -715,7 +795,8 @@ def stats(
       [bold]opener[/bold]   how sentences are started (article / pronoun / conjunction / …)
       [bold]syntax[/bold]   subordination, nominalization, passives, -ly adverbs
       [bold]structure[/bold] paragraph shape: lengths and sentences-per-paragraph
-      [bold]richness[/bold] Yule's K, MTLD, word length, readability (all length-stable)
+      [bold]richness[/bold] Yule's K, MTLD, word length, readability (steadier in length
+                than TTR, but see docs/metrics.md 1g — not flat)
       [bold]vocab[/bold]    tf-idf overlap — TOPIC, not voice; weighted 0 in the composite
 
     The composite (0-100) is calibrated per voice: `learn` reports the corpus's

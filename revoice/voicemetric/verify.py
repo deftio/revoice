@@ -134,6 +134,50 @@ def cllr(target_llr: list[float], nontarget_llr: list[float]) -> float:
     return (miss + false_alarm) / (2.0 * math.log(2.0))
 
 
+def c_at_1(target: list[float], nontarget: list[float], threshold: float,
+           band: float = 0.0) -> dict:
+    """PAN's c@1 — accuracy that does not punish an honest "I cannot tell".
+
+    Plain accuracy forces a call on every pair, so a system with wide confidence
+    intervals is scored as though it had guessed, and the guess is right half the time.
+    AUC has the same blind spot from the other side: it ranks, and ranking has no way to
+    express abstention at all. Both of them grade this engine on a behaviour it should
+    not have. Overlapping intervals are our most common *correct* output — the rail says
+    so in words — and neither metric can score that as anything but a coin flip.
+
+    c@1 (Penas & Rodrigo 2011, adopted by the PAN authorship-verification task) is:
+
+        c@1 = (n_c + n_u * n_c / n) / n
+
+    where `n_c` is the number answered correctly, `n_u` the number left unanswered, and
+    `n` the total. An abstention earns the rate you achieved on the questions you did
+    answer. So abstaining costs nothing if you were going to be right by luck, and gains
+    nothing if you were already accurate — it rewards knowing *which* pairs you cannot
+    call, which is precisely the skill a calibrated system has and an overconfident one
+    does not.
+
+    `band` is the half-width of the abstention zone around `threshold`: scores within it
+    are non-answers. band=0 makes this ordinary accuracy.
+    """
+    n_c = n_u = 0
+    for score, is_target in [(s, True) for s in target] + [(s, False) for s in nontarget]:
+        if abs(score - threshold) <= band:
+            n_u += 1
+        elif (score > threshold) == is_target:
+            n_c += 1
+    n = len(target) + len(nontarget)
+    if n == 0:
+        return {"c_at_1": 0.0, "accuracy": 0.0, "answered": 0, "abstained": 0, "band": band}
+    return {
+        "c_at_1": round((n_c + n_u * n_c / n) / n, 4),
+        # the same system scored the old way, so the cost of abstaining is visible
+        "accuracy": round(n_c / n, 4),
+        "answered": n - n_u,
+        "abstained": n_u,
+        "band": band,
+    }
+
+
 def pav(scores: list[float], labels: list[int]) -> list[float]:
     """Pool-adjacent-violators isotonic regression: scores -> monotone posteriors.
 

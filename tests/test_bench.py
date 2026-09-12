@@ -674,3 +674,132 @@ def test_load_corpus_accepts_an_injected_reader(tmp_path):
     assert load_corpus(tmp_path) == []
     docs = load_corpus(tmp_path, read=lambda p: "decoded by the caller's own reader")
     assert len(docs) == 1 and docs[0].text.startswith("decoded")
+
+
+# ---------------------------------------------------------------------------------
+# Length sensitivity.
+#
+# This exists because `yules_k` used to assert, with no source, that Yule's K does not
+# drift with text length. Tweedie & Baayen (1998) found no member of that family
+# constant. These tests keep the measurement honest so the claim cannot drift back.
+
+def _length_docs(n: int = 6):
+    from revoice.voicemetric.bench import Doc
+
+    # paragraphs long enough that the grid has something to cut
+    para = ("The committee reviewed the proposal at length and, after considerable "
+            "discussion of the several alternatives before it, resolved to defer a "
+            "decision until the following session, when further evidence would be "
+            "available to members. ")
+    short = "It failed. We fixed it. It passed. Nobody was surprised by any of this. "
+    out = []
+    for i in range(n):
+        body = "\n\n".join((para * 4 if i % 2 else short * 12) for _ in range(6))
+        out.append(Doc(author=f"a{i}", work=f"w{i}", register="test",
+                       path=f"a{i}/{i}.md", text=body))
+    return out
+
+
+def test_length_sensitivity_reports_every_axis():
+    from revoice.voicemetric.bench import length_sensitivity
+    from revoice.voicemetric.space import AXIS_NAMES
+
+    r = length_sensitivity(_length_docs(), lengths=(50, 100, 200))
+    assert set(r["axes"]) == set(AXIS_NAMES)
+    assert r["n_docs"] > 0
+    assert set(r["worst_first"]) == set(AXIS_NAMES)
+
+
+def test_the_two_cutting_regimes_are_not_the_same():
+    """Cutting by word count splits paragraphs wherever the count lands, which is what
+    `_window` does to build trials. Cutting on paragraph boundaries is what `windows`
+    does for the page. The paragraph-shape axes behave completely differently under the
+    two, and conflating them is how a dead axis goes unnoticed."""
+    from revoice.voicemetric.bench import length_sensitivity
+
+    lengths = (50, 100, 200, 400)
+    by_word = length_sensitivity(_length_docs(), lengths=lengths, cut="words")
+    by_para = length_sensitivity(_length_docs(), lengths=lengths, cut="paragraphs")
+    assert by_word["cut"] == "words" and by_para["cut"] == "paragraphs"
+    assert abs(by_word["axes"]["paragraph_length"]["r"]) > \
+           abs(by_para["axes"]["paragraph_length"]["r"])
+
+
+def test_an_unknown_cutting_mode_is_refused():
+    from revoice.voicemetric.bench import length_sensitivity
+
+    with pytest.raises(ValueError, match="cut must be"):
+        length_sensitivity(_length_docs(), cut="sentences")
+
+
+def test_documents_too_short_for_the_grid_are_skipped():
+    from revoice.voicemetric.bench import Doc, length_sensitivity
+
+    tiny = [Doc(author="a", work="w", register="r", path="a/1.md", text="Two words.")]
+    r = length_sensitivity(tiny, lengths=(50, 100))
+    assert r["n_docs"] == 0
+    # every axis still appears, reported as unmeasurable rather than silently absent
+    assert all(v["n_docs"] == 0 for v in r["axes"].values())
+
+
+def test_min_words_excludes_documents_below_the_floor():
+    from revoice.voicemetric.bench import length_sensitivity
+
+    docs = _length_docs()
+    assert length_sensitivity(docs, lengths=(50, 100), min_words=10 ** 6)["n_docs"] == 0
+    assert length_sensitivity(docs, lengths=(50, 100), min_words=0)["n_docs"] > 0
+
+
+def test_the_drift_table_flags_a_length_dominated_axis():
+    from revoice.voicemetric.bench import length_sensitivity, render_length_sensitivity
+
+    r = length_sensitivity(_length_docs(), lengths=(50, 100, 200, 400), cut="words")
+    text = render_length_sensitivity(r)
+    assert "length sensitivity" in text
+    assert "cut on words" in text
+    assert "paragraph_length" in text
+    # the point of the whole diagnostic: word-cut spans make this axis a length reading
+    assert "length-dominated" in text
+
+
+def test_decision_quality_is_reported_for_every_cell():
+    """c@1 rides alongside AUC in the bench output, so abstention is priced everywhere."""
+    from revoice.voicemetric.bench import _decision_quality
+
+    d = _decision_quality([0.9, 0.8, 0.85], [0.2, 0.1, 0.15])
+    assert d["accuracy"] == 1.0
+    assert 0.0 <= d["c_at_1"] <= 1.0
+    assert 0.0 <= d["abstain_rate"] <= 1.0
+    assert d["threshold"] is not None
+
+
+def test_decision_quality_degrades_gracefully_on_a_constant_scorer():
+    from revoice.voicemetric.bench import _decision_quality
+
+    d = _decision_quality([0.5, 0.5], [0.5, 0.5])
+    assert d["threshold"] is None
+    assert d["c_at_1"] != d["c_at_1"]        # nan: nothing to threshold
+
+
+def test_paragraph_cutting_skips_blank_paragraphs():
+    """Corpus files routinely carry trailing or doubled blank lines; a blank must not
+    count toward the word budget or the cut lands short."""
+    from revoice.voicemetric.bench import _truncate
+
+    # a leading blank line is the case that actually produces an empty split, and
+    # corpus files start with one often enough to matter
+    text = "\n\nFirst paragraph here.\n\n\n\nSecond paragraph here.\n\nThird one."
+    got = _truncate(text.split(), text, 6, "paragraphs")
+    assert got.startswith("First paragraph here.")     # not an empty leading paragraph
+    assert "\n\n\n" not in got
+
+
+def test_a_document_that_reaches_only_one_grid_point_is_skipped():
+    """One point cannot have a slope, so it contributes nothing and is not counted."""
+    from revoice.voicemetric.bench import Doc, length_sensitivity
+
+    short = "word " * 60
+    docs = [Doc(author="a", work="w", register="r", path="a/1.md", text=short)]
+    # 50 is reachable, 100 is not: one point, no correlation, document skipped
+    assert length_sensitivity(docs, lengths=(50, 100))["n_docs"] == 0
+    assert length_sensitivity(docs, lengths=(20, 50))["n_docs"] == 1

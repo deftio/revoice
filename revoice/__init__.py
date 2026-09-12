@@ -16,7 +16,7 @@ The two embedded engines version themselves independently and deliberately:
 `revoice.rubric.version()` and `revoice.voicemetric.version()`.
 """
 
-__version__ = "0.1.9"
+__version__ = "0.1.10"
 
 
 def version() -> str:

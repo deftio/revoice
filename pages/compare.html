@@ -57,6 +57,57 @@ function componentRows(parts, delta) {
   ];
 }
 
+/* The paired reading. Two axes, side by side, never averaged: a rewrite that nails the
+   voice while changing what a sentence claims is a failure, and one blended number would
+   rank it as a success. Mirrors voicemetric/transfer.py. */
+function gradeView(g) {
+  if (!g) return '';
+  var s = g.style, m = g.meaning;
+  var variant = m.overall < g.meaning_floor ? 'danger'
+              : (s.moved ? 'success' : (s.regressed ? 'warning' : 'info'));
+  var sign = function (x) { return (x >= 0 ? '+' : '') + x.toFixed(1); };
+
+  /* With every family at 1.00 there is no weakest one, and naming whichever sorted
+     first reads as a fault the rewrite does not have. */
+  var vals = Object.keys(m.families).map(function (k) { return m.families[k]; });
+  var trailing = Math.min.apply(null, vals) < Math.max.apply(null, vals);
+
+  var families = Object.keys(m.families).map(function (k) {
+    var v = m.families[k];
+    return { t: 'div', a: { class: 'rv_fam' + (v < g.meaning_floor ? ' rv_fam_bad' : '') }, c: [
+      { t: 'span', c: k }, { t: 'b', c: v.toFixed(2) } ]};
+  });
+
+  return { t: 'div', a: { class: 'rv_grade' }, c: [
+    { t: 'h3', c: 'Did the rewrite move toward your reference?' },
+    { t: 'div', a: { class: 'rv_cards' }, c: [
+      bw.makeStatCard({ value: sign(s.delta), label: s.interval_reliable
+          ? 'movement toward the reference (' + sign(s.low) + ' to ' + sign(s.high) + ' at 90%)'
+          : 'movement toward the reference (too short to bound)',
+        variant: s.moved ? 'success' : (s.regressed ? 'warning' : '') }),
+      bw.makeStatCard({ value: s.source.toFixed(0) + ' \u2192 ' + s.rewrite.toFixed(0),
+                        label: 'before and after, on the same 0\u2013100 scale', variant: '' }),
+      bw.makeStatCard({ value: m.overall.toFixed(2),
+                        label: trailing ? 'meaning kept \u2014 weakest family: ' + m.weakest
+                                        : 'meaning kept \u2014 all ' + vals.length
+                                          + ' families intact',
+                        variant: m.overall < g.meaning_floor ? 'danger' : 'success' })
+    ]},
+    { t: 'div', a: { class: 'rv_fams' }, c: families },
+    bw.makeAlert({ variant: variant, content: { t: 'span', c: [
+      { t: 'b', c: 'Verdict: ' }, g.verdict ]}}),
+    bw.makeAlert({ variant: 'light', content: { t: 'span', c: [
+      { t: 'b', c: 'Why two numbers and not one. ' },
+      'Style movement and meaning are reported separately and never averaged. A rewrite '
+      + 'that moved 14 points toward your voice while dropping a third of the figures has '
+      + 'not half-succeeded \u2014 it has failed in the way that matters most, and any '
+      + 'blended score would eventually recommend that trade. The meaning check is ',
+      { t: 'b', c: 'lexical retention, not entailment' },
+      ': it catches a dropped number, a deleted hedge or a swapped name, but not a '
+      + 'reordering that keeps every word and inverts the sense.' ]}})
+  ]};
+}
+
 function resultView(d) {
   if (!d) {
     return bw.makeAlert({ variant: 'light',
@@ -106,6 +157,7 @@ function resultView(d) {
   }
 
   return { t: 'div', c: [
+    gradeView(d.graded),
     rail,
     { t: 'div', a: { class: 'rv_cards' }, c: [
       bw.makeStatCard({ value: (d.z >= 0 ? '+' : '') + d.z.toFixed(1), suffix: ' σ',
@@ -143,6 +195,7 @@ function resultView(d) {
 function compare(panel) {
   var ref = (bw.el('#ref') || {}).value || '';
   var cand = (bw.el('#cand') || {}).value || '';
+  var src = (bw.el('#src') || {}).value || '';
   if (ref.trim().length < 200 || cand.trim().length < 100) {
     state.result = { error: 'Need more text — a few paragraphs of reference and at least one of candidate.' };
     return bw.refresh(panel);
@@ -153,7 +206,7 @@ function compare(panel) {
   // the axis chart: reference windows become a voice REGION, and the candidate is
   // placed in it. z-scored against a shipped population of real prose, not against
   // the reference itself — otherwise every coordinate collapses toward zero.
-  var chart = '', simReport = null, paired = null;
+  var chart = '', simReport = null, paired = null, graded = null;
   if (POPULATION) {
     var refWindows = vsWindows(ref);
     if (refWindows.length < 2) refWindows = [ref];
@@ -162,6 +215,11 @@ function compare(panel) {
     // Reference and candidate scored against the SAME reduced regions, so the
     // comparison is fair — see vsPairedReadings for the trap this avoids.
     paired = vsPairedReadings(refWindows, cand, POPULATION);
+    // The paired question, when the reader gave us a before as well as an after. Source
+    // and rewrite share topic, length and genre, so those confounds sit on both sides of
+    // the subtraction and cancel — which is why this reading is worth more than the two
+    // above it, not less.
+    if (src.trim().length >= 100) graded = vsGrade(src, cand, region, POPULATION);
     chart = vsRenderChart(simReport, 'Candidate vs your reference',
       simReport.words + ' words · ' + simReport.windows + ' window(s) · 17 axes · '
       + Math.round(simReport.confidence * 100) + '% bootstrap interval');
@@ -180,7 +238,7 @@ function compare(panel) {
 
   state.result = { z: r.z, composite: r.composite, self: base.self, windows: base.windows,
                    rows: componentRows(r.parts, r.delta), caveats: caveats,
-                   chart: chart, sim: simReport, paired: paired };
+                   chart: chart, sim: simReport, paired: paired, graded: graded };
   bw.refresh(panel);
 }
 
@@ -214,6 +272,16 @@ bw.mount('#app', sitePage('compare.html', [
             placeholder: 'The text to test…' })
         }) }}
     ]},
+    { t: 'div', a: { class: 'bw_bccl_card' }, c: { t: 'div', a: { class: 'bw_bccl_card_body' }, c:
+      bw.makeFormGroup({
+        label: 'Original draft — optional, and the strongest reading on this page',
+        help: 'If the candidate is a REWRITE of something, paste what it was rewritten FROM. '
+            + 'Comparing two versions of the same text cancels topic, length and genre, which '
+            + 'is most of what makes the readings above weak — and it also lets the page check '
+            + 'whether the meaning survived.',
+        input: bw.makeTextarea({ id: 'src', rows: 6,
+          placeholder: 'The draft the candidate was rewritten from…' })
+      }) }},
     { t: 'div', a: { id: 'go' }, c: '' },
     { t: 'div', a: { id: 'results' }, c: '' }
   ]),

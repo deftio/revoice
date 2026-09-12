@@ -72,12 +72,21 @@ def _hist(values: list[float], bins: list[float]) -> list[float]:
 
 
 def yules_k(counts: Counter) -> float:
-    """Yule's K — vocabulary richness that does NOT drift with text length.
+    """Yule's K — vocabulary richness that drifts with length far LESS than TTR does.
 
-    Type-token ratio and hapax ratio both fall as a text grows, so a baseline built
-    from documents and applied to a paragraph compares two different quantities.
-    K is built from the frequency spectrum instead: sum(i^2 * V_i) normalised by N^2,
-    which is stable across lengths. Lower K = richer vocabulary.
+    Type-token ratio and hapax ratio both fall steadily as a text grows, so a baseline
+    built from documents and applied to a paragraph compares two different quantities.
+    K is built from the frequency spectrum instead: sum(i^2 * V_i) normalised by N^2.
+
+    This docstring used to say K does not drift with length at all. That was wrong, and
+    it was asserted here without a source. Tweedie & Baayen (1998), "How Variable May a
+    Constant Be?", measured the length behaviour of the whole family of richness
+    constants empirically and found none of them constant — K included. It is markedly
+    more stable than TTR, which is why it is the one used here, but "more stable" is the
+    honest claim and "length-independent" was not. `bench.length_sensitivity` measures
+    the residual drift on the real corpus rather than asking anyone to take it on faith.
+
+    Lower K = richer vocabulary.
     """
     n = sum(counts.values())
     if n < 2:
@@ -88,12 +97,14 @@ def yules_k(counts: Counter) -> float:
 
 
 def mtld(words: list[str], threshold: float = 0.72) -> float:
-    """Measure of Textual Lexical Diversity — the other length-stable richness measure.
+    """Measure of Textual Lexical Diversity — the other length-robust richness measure.
 
     Walks the token stream accumulating a running type-token ratio; each time the TTR
     falls through `threshold` that is one "factor" and the counter resets. The score is
-    tokens per factor, averaged over a forward and a backward pass. Unlike raw TTR the
-    expected value does not depend on how much text you feed it.
+    tokens per factor, averaged over a forward and a backward pass. Because it counts
+    factors rather than dividing types by tokens, it is far flatter in length than raw
+    TTR — but see `yules_k` above: flatter is not flat, and the partial trailing factor
+    makes short texts the shakiest case. Measured, not assumed: `bench.length_sensitivity`.
     """
     def _pass(seq: list[str]) -> float:
         factors, types, tokens = 0.0, set(), 0

@@ -61,7 +61,8 @@ function vsSyllables(w) {
   return Math.max(count, 1);
 }
 
-/* Yule's K — length-stable vocabulary richness. Lower means richer, which is why the
+/* Yule's K — richness that drifts with length much less than TTR, though not
+   never (Tweedie & Baayen 1998). Lower means richer, which is why the
    axis negates it: every axis must point the way its name says. */
 function vsYulesK(words) {
   var counts = {}, n = words.length, w, spectrum = {}, m2 = 0, k;
@@ -461,3 +462,192 @@ function vsRailRow(label, sub, r) {
       { t: 'b', c: pt.toFixed(0) }, { t: 'span', c: ci } ]}
   ]};
 }
+
+/* ---- grading a rewrite: did it move, and did it keep the meaning? ----
+   Mirrors revoice/voicemetric/transfer.py. Two numbers, never merged: a rewrite that
+   nails the punctuation while changing what a sentence claims is a failure, and one
+   blended score would rank it as a success.
+
+   The bootstrap here uses vsRng on BOTH sides — the Python transfer module implements
+   the same LCG rather than random.Random, unlike vsSimilarityReport, whose stream node
+   cannot reproduce. A delta's verdict turns on whether its interval excludes zero, so
+   an approximate match would let page and tool disagree about whether a rewrite worked. */
+
+var VS_FUNCTION_WORDS = vsSet(('the of and a to in is that it for on with ' +
+  'as at by this but not are from or an be have ' +
+  'has had was were will would could should so if then than ' +
+  'which who what when where how all any both each few more ' +
+  'most other some such no nor only own same too very can ' +
+  'just don now about into over after').split(' '));
+var VS_NEGATIONS = vsSet(('cannot neither never no nobody none nor not nothing nowhere without').split(' '));
+var VS_HEDGES = vsSet(('apparently appear appears approximately could estimated generally indicate indicates likely may might ' +
+  'perhaps possibly potentially presumably probably roughly seem seems suggest suggested suggests typically ' +
+  'unlikely usually').split(' '));
+var VS_WORD_RX = /[A-Za-z][A-Za-z'-]*/g;
+var VS_NUMBER_RX = /\d+(?:[.,]\d+)*%?/g;
+var VS_MEANING_FLOOR = 0.75;
+var VS_PRESERVATION_FAMILIES = ['numbers', 'entities', 'negation', 'hedges', 'content'];
+
+/* Crude fixed-rule stemming. Must match transfer._stem character for character. */
+function vsStem(word) {
+  var w = word.toLowerCase(), sufs = ['ing', 'ed', 'es', 'ly', 's'], i, s;
+  if (w.slice(-2) === "'s") w = w.slice(0, -2);
+  for (i = 0; i < sufs.length; i++) {
+    s = sufs[i];
+    if (w.slice(-s.length) === s && w.length - s.length >= 3) { w = w.slice(0, -s.length); break; }
+  }
+  /* then a trailing "e", so measure/measured/measures are one stem, not three */
+  if (w.slice(-1) === 'e' && w.length >= 4) w = w.slice(0, -1);
+  return w;
+}
+
+/* Capitalisation only means "proper noun" away from a sentence opening. */
+function vsSentenceInitial(text, start) {
+  var i = start - 1, quoted = false;
+  while (i >= 0 && (/\s/.test(text[i]) || '"\'\u201c\u201d\u2018\u2019([{'.indexOf(text[i]) >= 0)) {
+    if (!/\s/.test(text[i])) quoted = true;
+    i--;
+  }
+  if (i < 0) return true;
+  /* past a quote mark a comma or colon opens a sentence too, or every line of dialogue
+     donates its first word to the proper-noun count */
+  return (quoted ? '.!?,:' : '.!?').indexOf(text[i]) >= 0;
+}
+
+function vsCount(list) {
+  var o = {}, i;
+  for (i = 0; i < list.length; i++) o[list[i]] = (o[list[i]] || 0) + 1;
+  return o;
+}
+
+function vsMatchAll(text, rx) { return text.match(rx) || []; }
+
+function vsEntities(text) {
+  var rx = new RegExp(VS_WORD_RX.source, 'g'), m, out = {};
+  while ((m = rx.exec(text)) !== null) {
+    if (m[0][0] >= 'A' && m[0][0] <= 'Z' && !vsSentenceInitial(text, m.index))
+      out[m[0]] = (out[m[0]] || 0) + 1;
+  }
+  return out;
+}
+
+function vsContentWords(text) {
+  var words = vsMatchAll(text, VS_WORD_RX), out = {}, i, w;
+  for (i = 0; i < words.length; i++) {
+    w = words[i];
+    if (!VS_FUNCTION_WORDS[w.toLowerCase()] && w.length > 2) {
+      var s = vsStem(w); out[s] = (out[s] || 0) + 1;
+    }
+  }
+  return out;
+}
+
+function vsMarkerCount(text, markers, isNegation) {
+  var words = vsMatchAll(text, VS_WORD_RX), n = 0, i;
+  for (i = 0; i < words.length; i++) if (markers[words[i].toLowerCase()]) n++;
+  if (isNegation) n += (text.match(/n't\b/gi) || []).length;
+  return n;
+}
+
+/* How much of the source survived, as a multiset fraction. Empty source scores 1.0. */
+function vsRecall(source, rewrite) {
+  var total = 0, kept = 0, k;
+  for (k in source) if (Object.prototype.hasOwnProperty.call(source, k)) {
+    total += source[k];
+    kept += Math.min(source[k], rewrite[k] || 0);
+  }
+  return total === 0 ? 1.0 : kept / total;
+}
+
+/* Adding a hedge changes the claim as surely as deleting one, so both directions cost. */
+function vsSymmetric(a, b) { var hi = Math.max(a, b); return hi === 0 ? 1.0 : Math.min(a, b) / hi; }
+
+function vsPreservation(source, rewrite) {
+  var families = {
+    numbers: vsRecall(vsCount(vsMatchAll(source, VS_NUMBER_RX)),
+                      vsCount(vsMatchAll(rewrite, VS_NUMBER_RX))),
+    entities: vsRecall(vsEntities(source), vsEntities(rewrite)),
+    negation: vsSymmetric(vsMarkerCount(source, VS_NEGATIONS, true),
+                          vsMarkerCount(rewrite, VS_NEGATIONS, true)),
+    hedges: vsSymmetric(vsMarkerCount(source, VS_HEDGES, false),
+                        vsMarkerCount(rewrite, VS_HEDGES, false)),
+    content: vsRecall(vsContentWords(source), vsContentWords(rewrite))
+  };
+  var weakest = VS_PRESERVATION_FAMILIES[0];
+  VS_PRESERVATION_FAMILIES.forEach(function (f) {
+    if (families[f] < families[weakest]) weakest = f;
+  });
+  /* MINIMUM, not mean: meaning preservation is conjunctive. A rewrite that dropped every
+     figure is broken however faithfully it kept the content words, and a mean would hand
+     it a comfortable 0.8. */
+  return { families: families, overall: families[weakest], weakest: weakest,
+           method: 'lexical retention, not entailment' };
+}
+
+function vsWindowZs(text, population) {
+  var ws = vsWindows(text);
+  return ws.length ? ws.map(function (w) { return vsStandardize(population, w); })
+                   : [vsStandardize(population, text)];
+}
+
+function vsOverallOf(zs, region) {
+  var zbar = {};
+  VS_AXIS_NAMES.forEach(function (a) {
+    zbar[a] = zs.reduce(function (acc, z) { return acc + z[a]; }, 0) / zs.length;
+  });
+  var sims = vsAxisSimilarity(zbar, region);
+  return 100 * VS_AXIS_NAMES.reduce(function (acc, a) { return acc + sims[a]; }, 0)
+         / VS_AXIS_NAMES.length;
+}
+
+/* Signed movement toward the voice, with an interval on the movement itself. `moved` is
+   true only when the WHOLE interval sits above zero: +9 with an interval of [-4, +21] is
+   reported as no measurable movement, because that is what it is. */
+function vsStyleDelta(source, rewrite, region, population, replicates, confidence, seed) {
+  replicates = replicates || 400; confidence = confidence || 0.9;
+  var zSrc = vsWindowZs(source, population), zOut = vsWindowZs(rewrite, population);
+  var sIn = vsOverallOf(zSrc, region), sOut = vsOverallOf(zOut, region);
+  var delta = sOut - sIn, headroom = 100 - sIn;
+  var closed = headroom > 1e-9 ? delta / headroom : 0;
+
+  var rnd = vsRng(seed === undefined ? 17 : seed), boot = [], i, j;
+  var reliable = zSrc.length >= 3 && zOut.length >= 3;
+  if (reliable) {
+    for (i = 0; i < replicates; i++) {
+      var pa = [], pb = [];
+      for (j = 0; j < zSrc.length; j++) pa.push(zSrc[Math.floor(rnd() * zSrc.length)]);
+      for (j = 0; j < zOut.length; j++) pb.push(zOut[Math.floor(rnd() * zOut.length)]);
+      boot.push(vsOverallOf(pb, region) - vsOverallOf(pa, region));
+    }
+  }
+  var loQ = (1 - confidence) / 2, hiQ = 1 - loQ, lo = delta, hi = delta;
+  if (boot.length >= 2) {
+    var v = boot.slice().sort(function (a, b) { return a - b; });
+    lo = vsPercentile(v, loQ); hi = vsPercentile(v, hiQ);
+  }
+  return { voice: region.name, source: sIn, rewrite: sOut, delta: delta, low: lo, high: hi,
+           closed: closed, confidence: confidence, windows: [zSrc.length, zOut.length],
+           interval_reliable: reliable, moved: !!(reliable && lo > 0),
+           regressed: !!(reliable && hi < 0) };
+}
+
+/* Both axes side by side. Meaning is checked FIRST and vetoes: a rewrite that moved 14
+   points toward the voice while losing a third of the figures has not half-succeeded. */
+function vsGrade(source, rewrite, region, population, replicates, confidence, seed) {
+  var style = vsStyleDelta(source, rewrite, region, population, replicates, confidence, seed);
+  var meaning = vsPreservation(source, rewrite), verdict;
+  if (meaning.overall < VS_MEANING_FLOOR)
+    verdict = 'meaning drift \u2014 ' + meaning.weakest + ' preserved at ' + meaning.overall.toFixed(2);
+  else if (style.moved)
+    verdict = 'moved toward ' + region.name + ' by ' + vsSigned(style.delta) + ' points';
+  else if (style.regressed)
+    verdict = 'moved away from ' + region.name + ' by ' + vsSigned(style.delta) + ' points';
+  else if (!style.interval_reliable)
+    verdict = 'too short to measure movement \u2014 one window cannot bound itself';
+  else
+    verdict = 'no measurable movement (' + vsSigned(style.delta) + ', interval [' +
+              vsSigned(style.low) + ', ' + vsSigned(style.high) + '] spans zero)';
+  return { style: style, meaning: meaning, verdict: verdict, meaning_floor: VS_MEANING_FLOOR };
+}
+
+function vsSigned(x) { return (x >= 0 ? '+' : '') + x.toFixed(1); }

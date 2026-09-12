@@ -157,3 +157,122 @@ def test_every_page_loads_the_version_script():
             assert 'src="version.js"' in html, f"{page.name} would show no version"
             assert html.index('version.js') < html.index('site.js'), \
                 f"{page.name} loads version.js after site.js, so the nav sees nothing"
+
+
+# ---------------------------------------------------------------------------------
+# Grading a rewrite: transfer.py vs the same functions in the page.
+#
+# These are held to a tighter standard than the similarity report above. That report's
+# interval is allowed to differ between page and tool because Python seeds it with
+# random.Random, whose stream node cannot reproduce. A DELTA cannot afford that slack:
+# `moved` is true only when the interval excludes zero, so a small divergence flips the
+# verdict from "this rewrite worked" to "no measurable movement". transfer.py therefore
+# implements the page's LCG rather than the other way round, and these tests assert the
+# intervals match exactly, not approximately.
+
+REWRITES = {
+    # same content, restyled: short declaratives become a long subordinated sentence
+    "restyled": (
+        "The valve failed during the second test. We replaced it with a spare. "
+        "The third test passed without incident.\n\n"
+        "No further work is needed. The unit shipped on 14 March.",
+        "Because the valve failed during the second test, we replaced it with a spare, "
+        "after which the third test passed without incident.\n\n"
+        "Nothing further is needed, and the unit shipped on 14 March."),
+    # meaning damaged: a negation and a figure dropped
+    "damaged": (
+        "The sample did not exceed 40 percent saturation in any of the 12 runs.",
+        "The sample exceeded saturation in the runs."),
+    "identical": ("A paragraph.\n\nAnd another one entirely.",
+                  "A paragraph.\n\nAnd another one entirely."),
+}
+
+
+_REGION_TEXTS = [FIXTURES["narrative"], FIXTURES["institutional"]]
+
+
+def _population():
+    from revoice.voicemetric.space import Population
+    return Population.fit(list(FIXTURES.values()))
+
+
+_POP = _population()
+
+
+def _js_transfer(pairs: dict, population: dict, region_texts: list[str]) -> dict:
+    """The population is fitted in Python and handed over, exactly as the page receives
+    it from demo/population.json — so these tests isolate the transfer functions rather
+    than re-testing coordinate parity, which the tests above already cover."""
+    script = f"""
+const fs = require('fs');
+const mod = new Function(fs.readFileSync({str(JS)!r}, 'utf8') +
+  '; return {{vsPreservation, vsStyleDelta, vsGrade, vsFitRegion}};')();
+const pairs = {json.dumps(pairs)};
+const pop = {json.dumps(population)};
+const region = mod.vsFitRegion('ref', {json.dumps(region_texts)}, pop);
+const out = {{}};
+for (const k of Object.keys(pairs)) {{
+  const [a, b] = pairs[k];
+  out[k] = {{preservation: mod.vsPreservation(a, b),
+             grade: mod.vsGrade(a, b, region, pop)}};
+}}
+process.stdout.write(JSON.stringify(out));
+"""
+    r = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout)
+
+
+@node
+def test_preservation_matches_the_page_exactly():
+    """Meaning preservation is fully deterministic, so 'close' is not good enough."""
+    from revoice.voicemetric.transfer import PRESERVATION_FAMILIES, preservation
+
+    js = _js_transfer(REWRITES, _POP.to_dict(), _REGION_TEXTS)
+    for name, (source, rewrite) in REWRITES.items():
+        py = preservation(source, rewrite)
+        got = js[name]["preservation"]
+        for family in PRESERVATION_FAMILIES:
+            assert py["families"][family] == pytest.approx(got["families"][family], abs=1e-9), (
+                f"{name}/{family}: python {py['families'][family]} vs page {got['families'][family]}")
+        assert py["weakest"] == got["weakest"], name
+        assert py["overall"] == pytest.approx(got["overall"], abs=1e-9)
+
+
+@node
+def test_style_delta_and_its_interval_match_the_page():
+    """The interval too — the verdict turns on whether it excludes zero."""
+    from revoice.voicemetric.space import VoiceRegion
+    from revoice.voicemetric.transfer import grade
+
+    pop, region = _POP, VoiceRegion.fit("ref", _REGION_TEXTS, _POP)
+    js = _js_transfer(REWRITES, pop.to_dict(), _REGION_TEXTS)
+
+    for name, (source, rewrite) in REWRITES.items():
+        py = grade(source, rewrite, region, pop)
+        got = js[name]["grade"]
+        for key in ("source", "rewrite", "delta", "low", "high"):
+            assert py["style"][key] == pytest.approx(got["style"][key], abs=1e-9), (
+                f"{name}/{key}: python {py['style'][key]} vs page {got['style'][key]}")
+        assert py["style"]["moved"] == got["style"]["moved"], name
+        assert py["style"]["regressed"] == got["style"]["regressed"], name
+        assert py["style"]["interval_reliable"] == got["style"]["interval_reliable"], name
+        assert py["verdict"] == got["verdict"], name
+
+
+@node
+def test_an_identical_rewrite_moves_nothing_in_both_implementations():
+    """The control. If a text graded against itself reports movement, the measure is broken."""
+    from revoice.voicemetric.space import VoiceRegion
+    from revoice.voicemetric.transfer import grade
+
+    region = VoiceRegion.fit("ref", _REGION_TEXTS, _POP)
+    py = grade(FIXTURES["narrative"], FIXTURES["narrative"], region, _POP)
+    assert py["style"]["delta"] == 0.0
+    assert py["meaning"]["overall"] == 1.0
+    assert not py["style"]["moved"] and not py["style"]["regressed"]
+
+    js = _js_transfer({"self": [FIXTURES["narrative"], FIXTURES["narrative"]]},
+                      _POP.to_dict(), _REGION_TEXTS)
+    assert js["self"]["grade"]["style"]["delta"] == pytest.approx(0.0, abs=1e-9)
+    assert js["self"]["grade"]["meaning"]["overall"] == 1.0

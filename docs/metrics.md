@@ -317,7 +317,9 @@ ratios** (semicolons per comma and so on — scale-free by construction),
 
 Removed: `type_token_ratio` and `hapax_ratio`, both of which fall as a text grows, so
 a band built from documents and applied to a paragraph was comparing two different
-quantities. **Yule's K** and **MTLD** replace them — both length-stable by design.
+quantities. **Yule's K** and **MTLD** replace them — both far steadier in length than
+TTR. *(Corrected in §1g: steadier is not flat. Tweedie & Baayen 1998 found no member of
+this family constant, and K still drifts ~0.5 sd across a 50–1600 word grid.)*
 
 ### 1b.5 Minimal-touch, fixed
 
@@ -539,6 +541,206 @@ spread near zero, deviations divide by it and come back in the millions, and eve
 similarity underflows to zero — the same failure mode the Burrows' Delta code already
 guards against, arrived at independently.
 
+## 1f. The paired question (`revoice rewrite-score`)
+
+Everything above measures an **absolute** question: *is this text by X?* Sections 1c–1d
+put the honest answer at AUC ~0.65–0.70 with same-genre negatives. That is a weak
+discriminator, and no amount of feature work in this family is going to move it far.
+
+The question revoice actually has to answer is a **paired** one:
+
+```
+Delta_style = D(source, target) - D(rewrite, target)
+```
+
+*Did this text, rewritten, move toward the target voice?* Source and rewrite share their
+topic, their genre, their era, their length and their content. Every confound that makes
+the absolute question hard is present on both sides of the subtraction and cancels. A
+0.69-quality instrument can support a much stronger claim on a difference than on a
+level, and the difference is what the product was always asking about — "this passage
+scores 43 against Twain" was never a useful sentence.
+
+Implemented in `voicemetric/transfer.py`, ported to `pages/voicespace.js`, exposed as
+`revoice rewrite-score SOURCE REWRITE --against VOICE`.
+
+**Two axes, and they are never merged.**
+
+| axis | what it answers | how it fails |
+|---|---|---|
+| `style` | signed movement toward the voice, with a bootstrap interval on the *movement* | reports movement that is really noise |
+| `meaning` | did the claims survive — figures, proper nouns, negation, hedging, content words | misses a reordering that inverts meaning |
+
+`style.moved` is true only when the **whole interval clears zero**. A delta of +9 whose
+interval runs [−4, +21] is reported as *no measurable movement*, because that is what it
+is.
+
+`meaning` **vetoes**. A rewrite that moved 14 points toward the voice while dropping a
+third of the source's figures has not half-succeeded; it has failed in the way that
+matters most. Any scheme that averaged the two axes would eventually recommend exactly
+that trade, so `grade()` returns both and refuses to combine them. The meaning score is
+the **minimum** across families, not the mean, for the same reason — meaning preservation
+is conjunctive, and a mean hands a rewrite that lost every number a comfortable 0.8.
+
+**The honest ceiling on `meaning`:** it is *lexical retention, not entailment*, and it
+says so in its own output. It catches what a rewrite dropped or swapped — a vanished
+figure, a deleted hedge turning a suggestion into a claim, a replaced name — which is the
+common failure mode. It cannot catch a reordering that inverts meaning while keeping
+every token; `test_reordering_that_inverts_meaning_is_the_known_blind_spot` records that
+as a property rather than leaving it to be discovered. Closing it needs an entailment
+model, and per §5 nothing in that tier runs in a page served off GitHub Pages. A lexical
+floor that ships beats a semantic ceiling that does not.
+
+**Does the style axis actually have power?** A measure that says "no measurable
+movement" to everything is useless, and the conservative verdict rule makes that failure
+easy to hide. Two runs against a Twain region built from 10 documents, with a Darwin
+passage as the source:
+
+```
+cosmetic edit only (";"→"."; "It is"→"It's"; "cannot"→"can't")
+  +0.3   interval [-8.7, +7.3]     no measurable movement
+  meaning: numbers 1.0  entities 1.0  negation 1.0  hedges 1.0  content 0.999
+
+real Twain paragraphs spliced in place of Darwin's
+  +32.9  interval [+20.4, +40.4]   clears zero by a wide margin
+  meaning: numbers 0.0            -> vetoed, correctly: it is a different text
+```
+
+The first is a true negative — punctuation swaps are not a voice change and the measure
+declines to call them one. The second shows the axis resolving a genuine voice change at
++32.9 with an interval nowhere near zero. The conservative rule is conservative, not
+blind. Note also the second case: the style axis was *right* and the run is still a
+failure, because the meaning axis vetoed. That is the design working — a blended score
+would have reported the largest style gain in the table as a success.
+
+**Why the bootstrap PRNG is shared with the browser.** `similarity_report` seeds its
+bootstrap with `random.Random`, whose stream node cannot reproduce, so page and tool are
+allowed to differ slightly on interval width there. A *delta* cannot afford that: the
+verdict turns on whether the interval excludes zero, so a small divergence flips "this
+rewrite worked" to "no measurable movement". `transfer.py` therefore implements the
+page's LCG rather than the other way round, and `tests/test_pages_parity.py` asserts the
+intervals match to 1e-9, not approximately.
+
+## 1g. Length sensitivity, and a claim this package made about itself
+
+`yules_k` used to assert, in its own docstring and with no source, that Yule's K "does
+NOT drift with text length". That was wrong. **Tweedie & Baayen (1998), "How Variable May
+a Constant Be? Measures of Lexical Richness in Perspective"** measured the whole family
+of richness constants empirically and found none of them constant. K is markedly more
+stable than TTR, which is why it is the one used here — but "more stable" is the honest
+claim and "length-independent" was not.
+
+`bench.length_sensitivity` now measures the residual drift instead of asserting its
+absence. Method: take one document, truncate it to each length in the grid, read the axes
+off each truncation. Author, work, topic and register are all held fixed, so anything
+that moves across the row is a length artifact. Reported per axis as within-document
+Pearson r against log(words), and as the shift from shortest to longest in units of the
+axis's own across-document spread.
+
+Measured on the 1,594-document corpus, 50 → 1600 words:
+
+| axis | r, cut on words | r, cut on paragraphs | drift (sd) |
+|---|---|---|---|
+| `paragraph_length` | **0.913** | 0.093 | +58.0 / +0.02 |
+| `sentences_per_paragraph` | **0.909** | 0.105 | +2.62 / +0.00 |
+| `sentence_variance` | 0.524 | 0.415 | +0.87 / +0.62 |
+| `sentence_length` | 0.351 | −0.039 | +0.46 / −0.39 |
+| `lexical_richness` | 0.050 | 0.128 | **+0.48 / +0.52** |
+
+Three findings, in order of how much they cost:
+
+**1. The bench has been feeding two axes their own query length.** `bench._window` builds
+a trial by `" ".join(words[start:start+n])` — which destroys every paragraph break, so
+every trial text is exactly one paragraph. `paragraph_length` and
+`sentences_per_paragraph` are then pure functions of the query length, identical for
+target and non-target within a length cell. They cannot inflate AUC, because a constant
+discriminates nothing; they are simply **dead weight in the `structure` component**,
+diluting the signal it does carry. This was found by the diagnostic on its first run,
+against a claim nobody had made. The two axes are fine on the page and in the report,
+where `space.windows` cuts on paragraph boundaries — hence the two `cut` modes, and why
+conflating them is how a dead axis goes unnoticed.
+
+**2. Yule's K does drift, just not log-linearly.** `lexical_richness` has near-zero
+correlation with log length (r = 0.05–0.13) and yet shifts **~0.5 population standard
+deviations** across the grid in both regimes. The correlation is low because the movement
+is not monotonic in log n, which is precisely why r alone would have exonerated it. Half
+a standard deviation is not nothing: it means a short sample and a long sample of the
+*same author* differ on this axis by half of what two different authors differ by. The
+fitted weight on `richness` is 0.104, and some fraction of that is the model rewarding
+length agreement rather than style agreement.
+
+**3. `sentence_variance` is the most length-sensitive axis that is not an artifact**
+(r = 0.42 even on paragraph cuts). Variance estimated from few sentences is biased low;
+this is that bias, visible.
+
+None of this is fixed here — fixing it changes scores, and therefore `signature()`, and
+therefore comparability with everything already published. It is recorded, measured, and
+reproducible via `bench.length_sensitivity`, which is the state a finding should be in
+before anyone acts on it.
+
+## 1h. Scoring an abstention (c@1)
+
+AUC and EER both grade a **ranker**. This engine is not asked to rank, it is asked to
+decide — and per §1e its most common *correct* answer is "these intervals overlap, I
+cannot call it". Neither measure can score that as anything but a coin flip, and plain
+accuracy actively punishes it: forced to guess, a system is right half the time, so
+abstention looks like pure loss.
+
+`verify.c_at_1` implements **Peñas & Rodrigo (2011)**, the measure the PAN
+authorship-verification task adopted for exactly this reason:
+
+```
+c@1 = (n_c + n_u * n_c / n) / n
+```
+
+An abstention earns the accuracy you achieved on the questions you *did* answer. It costs
+nothing if you were going to be right by luck and gains nothing if you were already
+accurate, so the only way to profit is to abstain on the cases you would have got wrong —
+which is the skill a calibrated system has and an overconfident one does not. Reported
+per (scorer, length) cell in the bench as `decision`, alongside the band that scored best
+and the abstention rate it bought.
+
+**And it answered a question we could not previously ask.** Full corpus, 70 authors,
+hard negatives, 99,920 trials:
+
+| query length | AUC | EER | accuracy | c@1 | best band | abstained |
+|---|---|---|---|---|---|---|
+| 50 | 0.565 | 0.453 | 0.549 | **0.549** | **0.000** | 0% |
+| 100 | 0.600 | 0.426 | 0.576 | **0.576** | **0.000** | 0% |
+| 200 | 0.647 | 0.393 | 0.609 | 0.610 | 0.499 | 9% |
+| 400 | 0.683 | 0.365 | 0.636 | 0.642 | 0.551 | 9% |
+| 800 | 0.727 | 0.323 | 0.678 | 0.685 | 0.610 | 8% |
+| 1600 | 0.780 | 0.289 | 0.717 | 0.726 | 0.670 | 8% |
+
+Two findings, and the second is unwelcome.
+
+**Below 200 words the composite knows nothing about its own reliability.** The best
+abstention band is exactly **zero** at both 50 and 100 words: declining to answer never
+helps, because a borderline score there is not a signal that the case is hard — it is
+just a score. This is a sharper statement of §1's "the numbers do not mean anything yet",
+and it is a statement AUC cannot make. AUC climbs smoothly from 0.565 to 0.780 across
+this table and is silent about where, in that climb, the scores start carrying
+self-knowledge.
+
+**Above 200 words it knows very little.** Abstaining on ~8–9% of pairs buys between 0.1
+and 0.9 points of accuracy. That is a real gain and it is nearly nothing. The honest
+reading is that this composite's borderline scores are only slightly more likely to be
+wrong than its confident ones — the score is weakly monotone in correctness, which is
+what an AUC near 0.68 with Cllr near 0.94 already implied and what General Imposters
+calibration (§6) exists to fix.
+
+> **Correction.** An earlier draft of this section reported this transition at 400 words
+> and the gain at 1.5–2 points, from a 22-author subset run while the full bench was
+> still going. The full corpus puts the transition at 200 words and the gain at under one
+> point. The subset was optimistic on both; these are the numbers.
+
+One more result worth recording because it is uncomfortable. `vocab` — the component
+held out of the voice score *by construction* because it measures subject matter — has a
+non-zero best band at **every** length including 50, abstains on 13–14%, and gains 0.4–1.1
+points by doing so. The topic component is better calibrated about its own reliability
+than the voice composite is. That does not argue for putting it back in the score; it
+argues that the voice components' failure is not only discrimination but self-knowledge,
+and it is a useful upper bound on what better calibration might recover here.
+
 ## 2. What the field does
 
 ### 2.1 Classical track
@@ -624,6 +826,44 @@ short-form and topically noisy. None of them contain the register revoice exists
 serve — instructional, technical and product prose — which is why the corpus builder
 includes a `technical` group.
 
+### 2.2c Citations added on a second reading, and one held back
+
+A later literature pass (September 2026) revised the reading list. What was adopted:
+
+- **Tweedie & Baayen (1998), "How Variable May a Constant Be?"** — the correction in §1g,
+  and the sharpest hit of the pass because it landed on a claim this package had written
+  about itself with no source. Cited in `features.yules_k`.
+- **Peñas & Rodrigo (2011), c@1** — §1h, implemented.
+- **Stamatatos (2009), "A Survey of Modern Authorship Attribution Methods"** and
+  **Sapkota et al. (2015), "Not All Character N-grams Are Created Equal"** — the better
+  general references for the feature families in §3, replacing the informal sources this
+  document leaned on. Sapkota in particular is worth reading before any further work on
+  the `ngram` component, which currently treats character n-grams as undifferentiated.
+
+What was **not** adopted, and why:
+
+- **spaCy for POS n-grams.** The proposal rated syntactic n-grams "high priority". Our
+  fitted weights put `syntax` and `fwbigram` at exactly **0.0** across 70 authors. Two
+  readings are possible and they are not the same: Burrows' Delta over most-frequent
+  words is already mostly function words, so `fwbigram` is near-collinear with it and
+  correctly zeroed — but our `syntax` is opener-class heuristics, not a tagger, so its
+  zero may be measuring the proxy rather than the feature. Settling that needs a real
+  tagger, and a tagger is a ~12–50 MB model dependency. It is a §5 tier decision gated on
+  an experiment, not a default, and the binding constraint is harder than size: **the
+  metric has to run in a page served off GitHub Pages**, with no server to ask. Everything
+  in `voicemetric` is stdlib Python written to port one-to-one into
+  `pages/voicespace.js`, and `tests/test_package_boundaries.py` enforces the Python half
+  by AST-parsing the package for forbidden imports. sklearn buys nothing here — char 3–5
+  grams plus cosine is already ~40 lines we have.
+- **Wang et al. (2025), EMNLP Findings, on LLM imitation of everyday writing styles.**
+  Possibly the most relevant paper in the set, and deliberately left uncited until
+  verified: every URL in the source carried `utm_source=chatgpt.com`, meaning it came out
+  of a chat session rather than a literature search, and this document does not cite what
+  it has not checked. If it holds up, **the dataset is worth more to us than the paper**:
+  email, blogs, forums and news from 400+ everyday authors. §4.1's corpus is 19th-century
+  published prose and §4.2's is institutional. We are validating a personal-voice tool on
+  dead novelists, and that is a larger gap than any feature on the list.
+
 ### 2.3 Evaluation methodology (adopt wholesale)
 
 - **STEL-or-Content** (Wegmann et al. 2022) — a content-controlled protocol that penalizes models
@@ -635,6 +875,13 @@ includes a `technical` group.
   overconfident scores. Calibration via **PAV** (pool-adjacent-violators isotonic regression) or
   logistic regression; PYLLR is the reference implementation to read. Both PAV and Cllr are
   ~40 lines of pure Python — **no dependency**.
+
+- **c@1** (Peñas & Rodrigo 2011), the PAN verification task's headline accuracy measure.
+  Adopted — see §1h. It is the only measure in the set that can score an abstention as
+  anything other than a coin flip, which matters because abstention is this engine's most
+  common correct output. **PAN 2021** also reports F1, F0.5u and Brier on an open-set
+  formulation (unseen authors, unseen topics); the open-set framing is already what §4's
+  work-level leave-one-out implements.
 
 ### 2.4 The most relevant result to revoice's thesis
 
@@ -685,7 +932,8 @@ But:
 - drop or fix the components §1.2 shows are noise
 - **add the two missing Writeprints categories**: structural (paragraph-length distribution,
   sentence-position habits) and idiosyncratic (habitual spelling/punctuation quirks)
-- replace TTR / hapax with **length-stable** richness measures (MTLD, Yule's K)
+- replace TTR / hapax with richness measures that are **far steadier in length** (MTLD,
+  Yule's K) — steadier, not stable; see §1g
 - add the cheap topic-independent features currently absent: function-word **bigrams**,
   sentence-opener class distribution, punctuation *sequences* and ratios (semicolons per comma,
   comma-before-*and* rate), clause-depth proxies (subordinator rate, commas per sentence),
@@ -904,16 +1152,33 @@ technical prose. That domain shift is real and is exactly what the bench exists 
    two era- and genre-matched groups of four authors, public domain, no LLM.
 3. ~~**T1 — fix the handcrafted vector.**~~ **Done** (0.1.2): leave-one-out and
    span-bucketed calibration, tf-idf out of the voice score by construction, `rhythm`
-   and `structure` measured as noise, length-stable richness, the missing structural
+   and `structure` measured as noise, length-steadier richness, the missing structural
    and syntactic families added.
 4. ~~**Fit the weights.**~~ **Done** (0.1.2) — `revoice bench --fit`.
 5. ~~**Re-derive the pipeline threshold.**~~ **Done** (0.1.2): 79% → 11% of the
    author's own text rewritten, and `--strength` now drives a measured operating curve.
-6. **Let the bench decide T2 (embeddings).** This is the next gating item, and §1b.1b
-   is the argument for it: the handcrafted vector tops out around AUC 0.59-0.68, and on
-   same-field scientific prose it is barely above chance. Score LUAR and StyleDistance
-   on the identical protocol and adopt only on a margin that justifies 126 MB.
-7. **Then** — model variants, prompt vs LoRA, 9B vs larger, base vs instruct.
+6. ~~**Grade the paired question, not just the absolute one.**~~ **Done** (0.1.9) —
+   §1f, `revoice rewrite-score`. The absolute question tops out near AUC 0.69 and no
+   feature work in this family will move it far; the paired question cancels the
+   confounds that cause that, and it is the one the product was always asking.
+7. ~~**Measure length sensitivity instead of asserting it.**~~ **Done** (0.1.9) — §1g,
+   which corrected a sourceless claim in `yules_k` and found two axes running dead in
+   the bench.
+8. ~~**Score abstention properly.**~~ **Done** (0.1.9) — §1h, c@1 alongside AUC/EER.
+9. **General Imposters calibration.** The gating item, and the binding constraint: Cllr
+   sits near 0.94, so the likelihood ratios carry almost no information in absolute
+   terms even where the ranking is usable. More features do not fix calibration;
+   calibration makes the features we already have usable.
+10. **Let the bench decide T2 (embeddings).** §1b.1b is the argument for it: the
+    handcrafted vector tops out around AUC 0.59-0.68, and on same-field scientific prose
+    it is barely above chance. Score LUAR and StyleDistance on the identical protocol and
+    adopt only on a margin that justifies 126 MB. Note the constraint from §2.2c: nothing
+    in that tier runs in a page off GitHub Pages, so T2 is a tool-side capability and the
+    page keeps the stdlib path regardless.
+11. **Corpora of modern everyday prose.** §2.2c. The whole benchmark is 19th-century
+    published prose plus institutional documents. A personal-voice tool validated on dead
+    novelists has a blind spot no feature will close.
+12. **Then** — model variants, prompt vs LoRA, 9B vs larger, base vs instruct.
 
 **Honest status of the instrument.** It is now measured, calibrated in the right units,
 and fitted rather than argued about, and it is good enough to keep minimal-touch from

@@ -261,3 +261,64 @@ def test_fit_weights_degenerate_column_does_not_divide_by_zero():
     w = fit_weights(tar, non)
     assert all(math.isfinite(x) for x in w)
     assert sum(w) == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------------
+# c@1 — accuracy that can score an honest abstention.
+#
+# AUC and EER both grade a ranker. This engine has to decide, and its most common
+# correct answer is "these overlap, I cannot call it". Neither of the other measures
+# can score that as anything but a coin flip.
+
+def test_c_at_1_with_no_abstention_is_plain_accuracy():
+    from revoice.voicemetric.verify import c_at_1
+
+    r = c_at_1([0.9, 0.8, 0.7], [0.3, 0.2, 0.1], threshold=0.5)
+    assert r["c_at_1"] == 1.0 == r["accuracy"]
+    assert r["abstained"] == 0 and r["answered"] == 6
+
+
+def test_a_perfectly_wrong_system_scores_zero():
+    from revoice.voicemetric.verify import c_at_1
+
+    r = c_at_1([0.1, 0.2], [0.8, 0.9], threshold=0.5)
+    assert r["c_at_1"] == 0.0 and r["accuracy"] == 0.0
+
+
+def test_abstaining_cannot_rescue_a_system_that_knows_nothing():
+    """The property that makes c@1 honest: an abstention earns the rate you achieved on
+    what you did answer. Abstain on everything and you score zero, not 0.5."""
+    from revoice.voicemetric.verify import c_at_1
+
+    r = c_at_1([0.5, 0.5], [0.5, 0.5], threshold=0.5, band=0.1)
+    assert r["abstained"] == 4 and r["answered"] == 0
+    assert r["c_at_1"] == 0.0
+
+
+def test_abstaining_on_the_cases_you_would_have_got_wrong_helps():
+    """The skill c@1 is built to reward: knowing WHICH pairs you cannot call."""
+    from revoice.voicemetric.verify import c_at_1
+
+    # four confident and right, two sitting on the threshold that would be coin flips
+    target = [0.95, 0.90, 0.52]
+    nontarget = [0.05, 0.10, 0.48]
+    decisive = c_at_1(target, nontarget, threshold=0.5)
+    abstaining = c_at_1(target, nontarget, threshold=0.5, band=0.05)
+    assert abstaining["abstained"] == 2
+    # the two borderline calls happened to be right, so abstaining costs a little here —
+    # what matters is that the measure prices the trade instead of ignoring it
+    assert decisive["accuracy"] == 1.0
+    assert 0.0 < abstaining["c_at_1"] <= 1.0
+
+
+def test_c_at_1_handles_an_empty_trial_set():
+    from revoice.voicemetric.verify import c_at_1
+
+    r = c_at_1([], [], threshold=0.5)
+    assert r["c_at_1"] == 0.0 and r["answered"] == 0
+
+
+def test_c_at_1_reports_the_band_it_used():
+    from revoice.voicemetric.verify import c_at_1
+
+    assert c_at_1([0.9], [0.1], threshold=0.5, band=0.25)["band"] == 0.25

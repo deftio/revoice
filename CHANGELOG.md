@@ -1,5 +1,116 @@
 # Changelog
 
+## 0.1.10 (unreleased)
+
+**Better metrics, under a hard constraint: everything here runs in a browser.**
+
+A literature pass produced a reading list. Four items survived contact with the code and
+with the fact that the compare page is served off GitHub Pages with no server to ask —
+which rules out spaCy, sklearn and every embedding model. `voicemetric` stays stdlib-only
+and every number below is asserted equal to its JavaScript port on shared fixtures.
+
+### Added — the paired question (`revoice rewrite-score`)
+`voicemetric/transfer.py`, ported to `pages/voicespace.js`, surfaced on the compare page.
+
+Everything before this measured an **absolute** question — *is this text by X?* — and
+measured it weakly: AUC ~0.69 across 70 authors with hard negatives. This asks the paired
+one:
+
+    Delta_style = D(source, target) - D(rewrite, target)
+
+Source and rewrite share their topic, genre, era, length and content, so every confound
+that makes the absolute question hard sits on **both sides of the subtraction and
+cancels**. It is also the question revoice always had to answer: "this passage scores 43
+against Twain" was never useful; "this rewrite moved 11 points toward Twain, and that
+movement clears the noise" is.
+
+Two axes, returned side by side and **never averaged**:
+- `style` — signed movement with a bootstrap interval **on the movement**. `moved` is
+  true only when the whole interval clears zero, so +9 with an interval of [-4, +21] is
+  reported as *no measurable movement*.
+- `meaning` — figures, proper nouns, negation, hedging, content words. It **vetoes**: a
+  rewrite that moved 14 points toward the voice while dropping a third of the source's
+  numbers has not half-succeeded. The score is the **minimum** across families, not the
+  mean, because meaning is conjunctive and a mean hands that rewrite a comfortable 0.8.
+
+Stated limit, in the output itself: *lexical retention, not entailment*. It catches what
+a rewrite dropped or swapped; it cannot catch a reordering that keeps every token and
+inverts the sense. `test_reordering_that_inverts_meaning_is_the_known_blind_spot` records
+that as a property rather than leaving it to be discovered.
+
+### Added — c@1, so an abstention can score
+AUC and EER grade a *ranker*. This engine has to decide, and its most common **correct**
+answer is "these intervals overlap, I cannot call it" — which neither measure can score
+as anything but a coin flip, and which plain accuracy actively punishes. `verify.c_at_1`
+(Peñas & Rodrigo 2011, the PAN verification measure) gives an abstention the accuracy you
+achieved on what you did answer, so the only way to profit is to abstain on the cases you
+would have got wrong. Reported per bench cell as `decision`, with the band that scored
+best and the abstention rate it bought.
+
+It immediately answered something the other measures could not — and the answer is not
+flattering. Measured on the full 70-author corpus, 99,920 trials: at **50 and 100 words
+the best abstention band is exactly zero**. Declining to answer never helps, because a
+borderline score at that length is not a signal that the case is hard; it is just a
+score. The composite has no self-knowledge below ~200 words. Above that it has a little,
+and only a little: abstaining on ~8–9% of pairs buys between 0.1 and 0.9 points of
+accuracy. AUC climbs smoothly from 0.565 to 0.780 across that whole range and is silent
+about where in the climb the transition happens.
+
+More uncomfortably, `vocab` — the component held out of the voice score *by construction*
+because it measures subject matter — is better calibrated about its own reliability than
+the voice composite is, at every length. That argues for calibration work (§6), not for
+putting it back in the score.
+
+### Fixed — a claim this package made about itself
+`yules_k` asserted, in its own docstring and with no source, that Yule's K "does NOT
+drift with text length". **Tweedie & Baayen (1998)** measured that whole family of
+richness constants and found none of them constant. K is far steadier than TTR, which is
+why it is the one used here, but "more stable" was the honest claim and
+"length-independent" was not. Corrected in the docstring and in the browser port.
+
+`bench.length_sensitivity` now measures the drift instead of anyone asserting its
+absence: truncate one document to each length in the grid, read the axes off each, and
+report how far each moved when *only the amount of text* changed.
+
+### Found — two axes running dead in the bench
+The new diagnostic's first run, against a claim nobody had made. `bench._window` builds a
+trial by `" ".join(words[start:start+n])`, which destroys every paragraph break, so every
+trial text is exactly one paragraph. `paragraph_length` and `sentences_per_paragraph` are
+then pure functions of the query length (r = **0.91**), identical for target and
+non-target within a length cell. They cannot inflate AUC — a constant discriminates
+nothing — but they are dead weight in the `structure` component, diluting the signal it
+does carry. Cut on paragraph boundaries instead, as `space.windows` does for the page,
+and r drops to **0.09**; hence the two `cut` modes, and why conflating them is how a dead
+axis goes unnoticed.
+
+Yule's K itself came out better than feared and worse than claimed: near-zero correlation
+with log length (r = 0.05-0.13) but **~0.5 population standard deviations** of drift
+across the grid, because the movement is not monotonic in log n and correlation alone
+would have exonerated it. Recorded, not fixed — fixing it moves scores and therefore
+`signature()`.
+
+### Fixed — two bugs in the new code, found by its own tests
+- `_stem` split one word three ways: "measured" lost its "ed" and became `measur` while
+  "measure" kept its "e" and stayed whole, so a rewrite that changed tense read as a lost
+  content word.
+- `_entities` counted the first word inside a quotation as a proper noun, so every line
+  of dialogue donated one.
+
+### Changed
+- `voicemetric` 0.4.0 → **0.5.0**, and `signature()` is **unchanged** — the first release
+  where the version moved and the signature did not. Nothing here shifts an existing
+  number, so 0.4.0 and 0.5.0 scores stay comparable. That is the distinction the
+  signature exists to draw.
+- `pages/compare.html` takes an optional third box, the original draft. Fill it and the
+  page leads with the paired reading instead of the absolute one.
+- Citations added for the measures that were already implemented (Stamatatos 2009,
+  Sapkota et al. 2015). One item was deliberately **not** cited: a 2025 EMNLP Findings
+  paper on LLM imitation of everyday writing styles, whose every source URL carried
+  `utm_source=chatgpt.com` — it came out of a chat session, not a literature search, and
+  this project does not cite what it has not checked. If it holds up, its *dataset*
+  matters more than its result: our whole benchmark is 19th-century published prose, and
+  a personal-voice tool validated on dead novelists has a blind spot no feature closes.
+
 ## 0.1.9 (unreleased)
 
 **The report the site and the tool both wanted.**

@@ -19,10 +19,12 @@ whole dependency surface is the Python standard library. Give it text, get back 
 Three layers, each usable on its own:
 
   features    deterministic stylometry — function words, n-grams, rhythm, punctuation,
-              length-stable vocabulary richness (Yule's K, MTLD)
+              vocabulary richness steadier in length than TTR (Yule's K, MTLD)
   baseline    corpus baselines and the composite score, with span-length calibration
   space       the same writing as 17 NAMED axes you can read, plot and argue with,
               plus bootstrap confidence intervals and an SVG report
+  transfer    grading a REWRITE rather than a text: did it move toward the target
+              voice, and did the meaning survive? Two numbers, never merged.
 
   verify      the honest scoring of any of it: AUC, EER, PAV, Cllr, weight fitting
   bench       an authorship-verification harness — work-level leave-one-out, hard
@@ -39,6 +41,11 @@ What it is honestly good at: noticing that an edit moved a document's register. 
 is not: authorship attribution. Measured across 70 authors in 11 genres with same-genre
 negatives, the composite reaches AUC ~0.69. See docs/metrics.md for the evidence and
 the limits, and README.md here for the shape of the API.
+
+That ~0.69 is the ceiling on the ABSOLUTE question ("is this text by X?"). `transfer`
+exists because the question revoice actually has to answer is a paired one — did this
+text, rewritten, move toward X? — where source and rewrite share every confound and the
+difference cancels them. The same features support a much stronger claim there.
 """
 
 import hashlib
@@ -65,17 +72,37 @@ from revoice.voicemetric.space import (
     effective_dimensionality,
     similarity_report,
 )
-from revoice.voicemetric.verify import auc, cllr, cllr_report, eer, fit_weights, tpr_at_fpr
+from revoice.voicemetric.transfer import (
+    MEANING_FLOOR,
+    PRESERVATION_FAMILIES,
+    grade,
+    preservation,
+    style_delta,
+)
+from revoice.voicemetric.verify import (
+    auc,
+    c_at_1,
+    cllr,
+    cllr_report,
+    eer,
+    fit_weights,
+    tpr_at_fpr,
+)
 
 # Pre-1.0 deliberately, and it matters. The scoring CONFIGURATION is still moving —
 # the composite weights have been refitted three times and the feature set has changed
 # — so scores from different MINOR versions are not comparable. That is exactly what
 # `signature()` exists to make visible rather than silent.
 #
-#   MAJOR  the API changes
-#   MINOR  the numbers change (weights, features, calibration)
+#   MAJOR  the API changes in a way that breaks a caller
+#   MINOR  the numbers change (weights, features, calibration), or the API grows
 #   PATCH  neither
-__version__ = "0.4.0"
+#
+# 0.5.0 grew `transfer` and `c_at_1` without moving a single existing number, which is
+# why `signature()` is unchanged from 0.4.0 — scores from the two are still comparable.
+# That is the distinction the signature exists to draw, and this is the first release
+# where the version moved and it did not.
+__version__ = "0.5.0"
 
 
 def version() -> str:
@@ -116,10 +143,11 @@ def describe() -> dict:
 
 
 __all__ = [
-    "AXES", "AXIS_NAMES", "COMPONENTS", "MIN_WORDS_RELIABLE", "Population",
-    "VOICE_COMPONENTS", "VoiceRegion", "WEIGHTS", "auc", "baseline_from_texts",
-    "calibration_from_texts", "cllr", "cllr_report", "coordinates",
-    "effective_dimensionality", "eer", "fingerprint", "fit_weights", "score_text",
-    "similarity_report", "span_floor", "tokenize", "tpr_at_fpr",
+    "AXES", "AXIS_NAMES", "COMPONENTS", "MEANING_FLOOR", "MIN_WORDS_RELIABLE",
+    "PRESERVATION_FAMILIES", "Population", "VOICE_COMPONENTS", "VoiceRegion", "WEIGHTS",
+    "auc", "baseline_from_texts", "c_at_1", "calibration_from_texts", "cllr",
+    "cllr_report", "coordinates", "effective_dimensionality", "eer", "fingerprint",
+    "fit_weights", "grade", "preservation", "score_text", "similarity_report",
+    "span_floor", "style_delta", "tokenize", "tpr_at_fpr",
     "SPAN_BUCKETS", "describe", "signature", "version",
 ]

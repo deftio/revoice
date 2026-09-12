@@ -103,6 +103,22 @@ bw.injectCSS(bw.css({
                 padding: '0.1em 0.45em', whiteSpace: 'nowrap' },
   '.rv_verdict p': { margin: '0', fontSize: '0.9em', color: P.light.darkText,
                      maxWidth: '58ch' },
+  /* the paired grade — the strongest reading the page can give, so it leads, and the
+     two axes sit side by side rather than collapsing into one number */
+  '.rv_grade': { background: P.surfaceAlt, border: '1px solid ' + P.light.border,
+                 borderRadius: L.radius.card, padding: '1.1em 1.2em 1em',
+                 display: 'flex', flexDirection: 'column', gap: '0.85em',
+                 marginBottom: '1.1em' },
+  '.rv_grade h3': { margin: '0', fontSize: '1.02em', fontWeight: '650' },
+  '.rv_fams': { display: 'flex', flexWrap: 'wrap', gap: '0.5em' },
+  '.rv_fam': { display: 'flex', gap: '0.5em', alignItems: 'baseline',
+               fontFamily: 'Menlo,Consolas,monospace', fontSize: '0.78em',
+               fontVariantNumeric: 'tabular-nums', background: P.background,
+               border: '1px solid ' + P.light.border, borderRadius: '3px',
+               padding: '0.2em 0.55em' },
+  '.rv_fam span': { color: P.light.darkText },
+  '.rv_fam_bad': { borderColor: P.danger.base, color: P.danger.base },
+  '.rv_fam_bad span': { color: P.danger.base },
   '.rv_wrap': { maxWidth: '1280px', margin: '0 auto', padding: '0 3rem' },
   '.rv_hero': { padding: '1.3em 0 0 0' },
 

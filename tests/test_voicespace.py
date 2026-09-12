@@ -634,3 +634,95 @@ def test_cli_warns_at_the_terminal_when_the_ordering_is_not_evidence(space_corpu
                             "--replicates", "120"])
     assert r.exit_code == 0, r.output
     assert "overlaps by" in r.output and "not evidence" in r.output
+
+
+# ---------- cli: rewrite-score ----------
+#
+# The paired question. `space` asks "is this text like that voice", which the bench puts
+# at AUC ~0.69; this asks "did this rewrite move toward it", where source and rewrite
+# share every confound and the difference cancels them.
+
+
+@pytest.fixture()
+def rewrite_pair(tmp_path):
+    source = tmp_path / "draft.md"
+    rewrite = tmp_path / "revised.md"
+    source.write_text(TERSE)
+    rewrite.write_text(TERSE.replace(". ", ", and "))
+    return source, rewrite
+
+
+def test_cli_rewrite_score_reports_both_axes(space_corpus, rewrite_pair):
+    source, rewrite = rewrite_pair
+    r = runner.invoke(app, ["rewrite-score", str(source), str(rewrite),
+                            "--corpus", str(space_corpus), "--against", "terse"])
+    assert r.exit_code == 0, r.output
+    assert "STYLE" in r.output and "MEANING" in r.output
+    for family in ("numbers", "entities", "negation", "hedges", "content"):
+        assert family in r.output
+    assert "lexical retention, not entailment" in r.output
+
+
+def test_cli_rewrite_score_json_keeps_the_axes_separate(space_corpus, rewrite_pair):
+    source, rewrite = rewrite_pair
+    r = runner.invoke(app, ["rewrite-score", str(source), str(rewrite),
+                            "--corpus", str(space_corpus), "--against", "terse", "--json"])
+    assert r.exit_code == 0, r.output
+    payload = json.loads(r.output)
+    assert set(payload) == {"style", "meaning", "verdict", "meaning_floor"}
+    # no blended score anywhere: that is the whole design
+    assert "score" not in payload and "combined" not in payload
+
+
+def test_cli_rewrite_score_flags_meaning_drift(space_corpus, tmp_path):
+    source = tmp_path / "a.md"
+    damaged = tmp_path / "b.md"
+    source.write_text("The valve did not fail in 12 of the 15 runs on 3 March.")
+    damaged.write_text("The valve failed in the runs.")
+    r = runner.invoke(app, ["rewrite-score", str(source), str(damaged),
+                            "--corpus", str(space_corpus), "--against", "terse"])
+    assert r.exit_code == 0, r.output
+    assert "meaning drift" in r.output
+
+
+def test_cli_rewrite_score_says_when_it_cannot_bound_the_movement(space_corpus,
+                                                                 rewrite_pair):
+    """A short pair gets no interval, and the output says so rather than implying one."""
+    source, rewrite = rewrite_pair
+    r = runner.invoke(app, ["rewrite-score", str(source), str(rewrite),
+                            "--corpus", str(space_corpus), "--against", "terse"])
+    assert "no interval" in r.output or "interval [" in r.output
+
+
+def test_cli_rewrite_score_rejects_an_unknown_voice(space_corpus, rewrite_pair):
+    source, rewrite = rewrite_pair
+    r = runner.invoke(app, ["rewrite-score", str(source), str(rewrite),
+                            "--corpus", str(space_corpus), "--against", "nobody"])
+    assert r.exit_code == 1
+    assert "at least 2 documents" in r.output
+
+
+def test_cli_rewrite_score_rejects_an_empty_corpus(tmp_path, rewrite_pair):
+    source, rewrite = rewrite_pair
+    (tmp_path / "nothing").mkdir()
+    r = runner.invoke(app, ["rewrite-score", str(source), str(rewrite),
+                            "--corpus", str(tmp_path / "nothing"), "--against", "terse"])
+    assert r.exit_code == 1
+    assert "no documents found" in r.output
+
+
+def test_cli_rewrite_score_prints_the_interval_when_it_has_one(space_corpus, tmp_path):
+    """Above the 3-window floor the movement is bounded, and the bound is what is shown —
+    the point estimate alone would invite a decision the measurement cannot support."""
+    paras = [p for p in ORNATE.split("\n\n") if p.strip()]
+    long_source = "\n\n".join(paras * 30)
+    source = tmp_path / "long-a.md"
+    rewrite = tmp_path / "long-b.md"
+    source.write_text(long_source)
+    rewrite.write_text(long_source)          # identical: movement must bound around zero
+    r = runner.invoke(app, ["rewrite-score", str(source), str(rewrite),
+                            "--corpus", str(space_corpus), "--against", "terse",
+                            "--replicates", "60"])
+    assert r.exit_code == 0, r.output
+    assert "interval [" in r.output and "of the gap" in r.output
+    assert "no measurable movement" in r.output
