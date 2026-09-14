@@ -11,22 +11,17 @@ import json
 import math
 import re
 import sys
-from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from revoice.voicemetric.features import (  # noqa: E402
-    FUNCTION_WORDS,
-    char_ngram_profile,
-    fingerprint,
-    word_bigram_profile,
-)
+from revoice.voicemetric.baseline import baseline_from_texts, score_text  # noqa: E402
 
 ROOT = Path(__file__).parent.parent
 OUT = ROOT / "pages" / "demo" / "voices.json"
 POP_OUT = ROOT / "pages" / "demo" / "population.json"
 VERSION_OUT = ROOT / "pages" / "version.js"
+CONSTANTS_OUT = ROOT / "pages" / "engine-constants.js"
 
 # Where the browser's voice-space population comes from. The benchmark corpus if it has
 # been fetched, otherwise the bundled example voices — a narrower reference, but the
@@ -60,36 +55,27 @@ def _windows(text: str, target: int = 1200) -> list[str]:
     return [w for w in out if len(w) > 300]
 
 
-def _aggregate(texts: list[str]) -> dict:
-    """Baseline from a list of windows. Pure aggregation, so leave-one-out
-    calibration can rebuild it without duplicating the logic."""
-    fps = [fingerprint(t) for t in texts]
-    fw = {}
-    for w in FUNCTION_WORDS:
-        m, s = _mean_std([fp["function_word_freq"].get(w, 0.0) for fp in fps])
-        fw[w] = [round(m, 5), round(max(s, 1e-6), 5)]
-    n = len(fps)
-    hist = [round(sum(fp["sent_len_hist"][i] for fp in fps) / n, 4)
-            for i in range(len(fps[0]["sent_len_hist"]))]
-    punct = {}
-    for p in ",;:—–()!?\"'":
-        m, s = _mean_std([fp["punct_per_sentence"].get(p, 0.0) for fp in fps])
-        punct[p] = [round(m, 4), round(max(s, 1e-6), 4)]
-    cent: Counter = Counter()
-    for t in texts:
-        for k, v in char_ngram_profile(t).items():
-            cent[k] += v / len(texts)
-    ngrams = {k: round(v, 6) for k, v in cent.most_common(TOP_NGRAMS)}
-    bcent: Counter = Counter()
-    for t in texts:
-        for k, v in word_bigram_profile(t).items():
-            bcent[k] += v / len(texts)
-    bigrams = {k: round(v, 6) for k, v in bcent.most_common(TOP_NGRAMS)}
-    return {"doc_count": n, "function_words": fw, "sent_len_hist": hist,
-            "punct": punct, "char_ngrams": ngrams, "word_bigrams": bigrams}
+# `vocab` is dropped from the shipped baselines on purpose. It is weighted 0.0 in the
+# voice score by construction (see VOICE_COMPONENTS), so `score_text` returning vocab=0.0
+# against an absent centroid leaves the composite bit-identical — while `df` alone would
+# be most of the file, since it carries every content term in the corpus.
+DROP_FROM_SHIPPED = ("df", "tfidf_centroid")
 
 
 def build(voice_dir: Path) -> dict:
+    """Per-register baselines for the demo page, built by the REAL engine.
+
+    This function used to carry its own `_aggregate` and `_demo_score` — a third
+    implementation of the composite alongside the Python engine and the browser port,
+    running weights of 0.2/0.6/0.1/0.1 under a docstring that said "keep the weights in
+    sync". They were not in sync: the fitted values are 0.318/0.181/0.0/0.332 plus four
+    components that implementation did not have at all. Nothing enforced the comment,
+    so the comment lost.
+
+    Now there is one implementation. `baseline_from_texts` and `score_text` are the same
+    functions `revoice learn` and `revoice stats` call, and pages/voicemetric.js is a
+    parity-tested port of exactly them.
+    """
     groups: dict[str, list[str]] = {}
     for f in sorted((voice_dir / "training-data").glob("*.md")):
         prefix = f.name.split("-")[0]
@@ -97,54 +83,27 @@ def build(voice_dir: Path) -> dict:
         if reg:
             groups.setdefault(reg, []).extend(_windows(f.read_text()))
 
-    registers = {reg: _aggregate(texts) for reg, texts in groups.items()}
+    registers = {reg: baseline_from_texts(texts) for reg, texts in groups.items()}
 
-    # Self-calibration, LEAVE-ONE-OUT (mirrors buildBaseline() in pages/stylometry.js).
-    # Scoring a window against a baseline it helped build is contaminated: the window
-    # pulls the mean toward itself, so the band lands too high and too tight, and every
-    # candidate then scores lower than it should against it.
+    # Self-calibration, LEAVE-ONE-OUT. Scoring a window against a baseline it helped
+    # build is contaminated: the window pulls the mean toward itself, so the band lands
+    # too high and too tight, and every candidate then scores lower than it should.
     for reg, texts in groups.items():
         selfs = []
         for i, t in enumerate(texts):
             rest = texts[:i] + texts[i + 1:]
             if len(rest) < 2:
                 continue
-            selfs.append(_demo_score(t, _aggregate(rest)))
+            selfs.append(score_text(t, baseline_from_texts(rest))["composite"])
         if not selfs:  # too few windows to hold one out
-            selfs = [_demo_score(t, registers[reg]) for t in texts]
+            selfs = [score_text(t, registers[reg])["composite"] for t in texts]
         m, s = _mean_std(selfs)
         registers[reg]["self"] = [round(m, 1), round(max(s, 1.0), 1)]
+
+    for base in registers.values():
+        for k in DROP_FROM_SHIPPED:
+            base.pop(k, None)
     return registers
-
-
-def _demo_score(text: str, base: dict) -> float:
-    """Python mirror of the JS score() in pages/stylometry.js — keep the weights in sync.
-
-    Weights come from `revoice bench` (topic-controlled): 0.2/0.6/0.1/0.1 scores
-    macro AUC 0.687 vs 0.641 for the previous even split.
-    """
-    fp = fingerprint(text)
-    ng = char_ngram_profile(text, top=300)
-    zs = []
-    for w, (m, s) in base["function_words"].items():
-        zs.append(abs(fp["function_word_freq"].get(w, 0.0) - m) / max(s, 0.15 * m + 5e-4))
-    delta_sim = math.exp(-(sum(zs) / len(zs)) / 1.5)
-    l1 = sum(abs(a - b) for a, b in zip(fp["sent_len_hist"], base["sent_len_hist"], strict=False))
-    rhythm = 1 - l1 / 2
-    def _cos(a, b):
-        dot = sum(v * b.get(k, 0.0) for k, v in a.items())
-        na = math.sqrt(sum(v * v for v in a.values()))
-        nb = math.sqrt(sum(v * v for v in b.values()))
-        return dot / (na * nb) if na and nb else 0.0
-
-    ngram = _cos(ng, base["char_ngrams"])
-    if base.get("word_bigrams"):
-        ngram = 0.5 * ngram + 0.5 * _cos(word_bigram_profile(text), base["word_bigrams"])
-    ps = []
-    for p, (m, s) in base["punct"].items():
-        ps.append(math.exp(-abs(fp["punct_per_sentence"].get(p, 0.0) - m) / max(s, 0.05)))
-    punct = sum(ps) / len(ps)
-    return 100 * (0.2 * delta_sim + 0.6 * ngram + 0.1 * rhythm + 0.1 * punct)
 
 
 def export_population(quiet: bool = False) -> dict:
@@ -195,6 +154,106 @@ def export_versions(quiet: bool = False) -> None:
         print(f"wrote {VERSION_OUT} (revoice {payload['revoice']})")
 
 
+def export_constants(quiet: bool = False) -> None:
+    """Emit every shared constant as JS, so the two implementations cannot disagree.
+
+    The engine exists twice — once in Python, once in JavaScript, because the compare
+    page runs off GitHub Pages with no server to ask. Two implementations of anything
+    drift; the question is only what you do about it. Here the split is deliberate:
+
+      DATA      lives in Python and is generated into this file. Word lists, histogram
+                bins, component weights, axis names, punctuation sets. These are the
+                parts that drift silently and cost the most when they do — the page
+                spent months scoring with `ngram` at 0.6 while the fitted weight was
+                0.181, because the number had been typed into the JS by hand and the
+                Python was refitted three times afterwards.
+      ALGORITHM lives in both, and is held together by tests/test_pages_parity.py,
+                which runs the real JavaScript under node against the real Python on
+                shared fixtures every time the suite runs.
+
+    A constant that is generated cannot be edited into disagreement. An algorithm that
+    is tested cannot drift without a failure. Nothing else is load-bearing.
+    """
+    from revoice.voicemetric.baseline import (
+        COMPONENTS,
+        PUNCT_RATIO_SCALARS,
+        PUNCTS,
+        RICHNESS_SCALARS,
+        SCALARS,
+        STRUCTURE_SCALARS,
+        SYNTAX_SCALARS,
+        VOICE_COMPONENTS,
+        WEIGHTS,
+    )
+    from revoice.voicemetric.features import (
+        ARTICLES,
+        CONJUNCTIONS,
+        FUNCTION_WORDS,
+        OPENER_CLASSES,
+        PARA_HIST_BINS,
+        PREPOSITIONS,
+        PRONOUNS,
+        SENT_HIST_BINS,
+        STOP,
+        SUBORDINATORS,
+        TOP_CHAR_NGRAMS,
+        TOP_WORD_BIGRAMS,
+        WORD_HIST_BINS,
+    )
+    from revoice.voicemetric.features import (
+        CHAR_NGRAM_N as NGRAM_N,
+    )
+    from revoice.voicemetric.space import AXES, FIRST_PERSON, MIN_SPREAD, SECOND_PERSON
+    from revoice.voicemetric.transfer import HEDGES, MEANING_FLOOR, NEGATIONS
+
+    payload = {
+        "FUNCTION_WORDS": list(FUNCTION_WORDS),
+        # sets are emitted sorted: Python set iteration order is not stable across
+        # runs, and an unstable generated file would churn the diff every regeneration
+        "ARTICLES": sorted(ARTICLES),
+        "PRONOUNS": sorted(PRONOUNS),
+        "CONJUNCTIONS": sorted(CONJUNCTIONS),
+        "SUBORDINATORS": sorted(SUBORDINATORS),
+        "PREPOSITIONS": sorted(PREPOSITIONS),
+        "OPENER_CLASSES": list(OPENER_CLASSES),
+        "STOP": sorted(STOP),
+        "SENT_HIST_BINS": list(SENT_HIST_BINS),
+        "WORD_HIST_BINS": list(WORD_HIST_BINS),
+        "PARA_HIST_BINS": list(PARA_HIST_BINS),
+        "PUNCTS": list(PUNCTS),
+        "COMPONENTS": list(COMPONENTS),
+        "VOICE_COMPONENTS": list(VOICE_COMPONENTS),
+        "WEIGHTS": dict(WEIGHTS),
+        "RICHNESS_SCALARS": list(RICHNESS_SCALARS),
+        "SYNTAX_SCALARS": list(SYNTAX_SCALARS),
+        "STRUCTURE_SCALARS": list(STRUCTURE_SCALARS),
+        "PUNCT_RATIO_SCALARS": list(PUNCT_RATIO_SCALARS),
+        "SCALARS": list(SCALARS),
+        "CHAR_NGRAM_N": NGRAM_N,
+        "TOP_CHAR_NGRAMS": TOP_CHAR_NGRAMS,
+        "TOP_WORD_BIGRAMS": TOP_WORD_BIGRAMS,
+        "AXES": [{"name": a.name, "low": a.low, "high": a.high, "family": a.family}
+                 for a in AXES],
+        "MIN_SPREAD": MIN_SPREAD,
+        "FIRST_PERSON": sorted(FIRST_PERSON),
+        "SECOND_PERSON": sorted(SECOND_PERSON),
+        "NEGATIONS": sorted(NEGATIONS),
+        "HEDGES": sorted(HEDGES),
+        "MEANING_FLOOR": MEANING_FLOOR,
+    }
+    CONSTANTS_OUT.write_text(
+        "/* generated by scripts/export_demo_baselines.py — do not edit.\n"
+        "   Every shared constant between the Python engine and its browser port. The\n"
+        "   ALGORITHMS live in both and are held together by tests/test_pages_parity.py;\n"
+        "   the DATA lives in Python and is generated here, because hand-copied data is\n"
+        "   what actually drifts. The page scored with ngram weighted 0.6 for months\n"
+        "   while the fitted value was 0.181, for exactly that reason. */\n"
+        f"var VM_CONST = {json.dumps(payload, indent=2, ensure_ascii=False)};\n")
+    if not quiet:
+        print(f"wrote {CONSTANTS_OUT} ({CONSTANTS_OUT.stat().st_size/1024:.1f} KB, "
+              f"{len(payload)} constant groups)")
+
+
 def check() -> int:
     """Verify the generated files are current, writing nothing.
 
@@ -202,7 +261,7 @@ def check() -> int:
     authors code, and then what ships is not what was reviewed and tested — so release
     checks, and the developer regenerates as part of normal work.
     """
-    before = {f: f.read_bytes() if f.is_file() else None for f in (OUT, POP_OUT, VERSION_OUT)}
+    before = {f: f.read_bytes() if f.is_file() else None for f in (OUT, POP_OUT, VERSION_OUT, CONSTANTS_OUT)}
     main(quiet=True)
     stale = [f.name for f, prior in before.items() if f.read_bytes() != prior]
     for f, prior in before.items():          # leave the tree exactly as found
@@ -232,6 +291,7 @@ def main(quiet: bool = False):
                         ((k, list(vv)) for k, vv in voices.items())))
     export_population(quiet)
     export_versions(quiet)
+    export_constants(quiet)
 
 
 if __name__ == "__main__":

@@ -12,43 +12,25 @@
  * coordinate near zero and makes the chart say nothing.
  */
 
-var VS_AXES = [
-  { name: 'sentence_length',         low: 'clipped',              high: 'long-breathed',            family: 'rhythm' },
-  { name: 'sentence_variance',       low: 'metronomic',           high: 'varied',                   family: 'rhythm' },
-  { name: 'paragraph_length',        low: 'short paragraphs',     high: 'long paragraphs',          family: 'structure' },
-  { name: 'sentences_per_paragraph', low: 'one-idea paragraphs',  high: 'developed paragraphs',     family: 'structure' },
-  { name: 'word_length',             low: 'plain words',          high: 'long words',               family: 'lexis' },
-  { name: 'lexical_richness',        low: 'repetitive',           high: 'wide vocabulary',          family: 'lexis' },
-  { name: 'readability',             low: 'demanding',            high: 'easy',                     family: 'lexis' },
-  { name: 'subordination',           low: 'coordinate',           high: 'subordinate-heavy',        family: 'syntax' },
-  { name: 'nominalization',          low: 'verbal',               high: 'abstract-nouny',           family: 'syntax' },
-  { name: 'passivity',               low: 'active',               high: 'passive',                  family: 'syntax' },
-  { name: 'adverbial',               low: 'spare',                high: '-ly heavy',                family: 'syntax' },
-  { name: 'comma_density',           low: 'unpunctuated',         high: 'comma-heavy',              family: 'punctuation' },
-  { name: 'punctuation_variety',     low: 'commas only',          high: 'semicolons/dashes/colons', family: 'punctuation' },
-  { name: 'conjunction_openings',    low: 'formal openings',      high: 'and/but openings',         family: 'stance' },
-  { name: 'contraction',             low: 'formal',               high: 'conversational',           family: 'stance' },
-  { name: 'first_person',            low: 'impersonal',           high: 'first-person',             family: 'stance' },
-  { name: 'second_person',           low: 'no address',           high: 'addresses the reader',     family: 'stance' }
-];
-var VS_AXIS_NAMES = VS_AXES.map(function (a) { return a.name; });
+/* Every constant below is GENERATED from the Python by
+   scripts/export_demo_baselines.py into pages/engine-constants.js, and read from
+   VM_CONST here. Nothing in this file is hand-typed data.
 
-var VS_SUBORDINATORS = ('if when while because although though since unless until whereas ' +
-  'whether after before as').split(' ');
-var VS_CONJUNCTIONS = 'and but or nor yet so for'.split(' ');
-var VS_ARTICLES = 'the a an'.split(' ');
-var VS_PRONOUNS = ('i you he she it we they his her its our their my your this that these ' +
-  'those there').split(' ');
-var VS_PREPOSITIONS = ('of in to on at by with from into over under about through between ' +
-  'against upon among').split(' ');
-var VS_FIRST = 'i me my mine we us our ours'.split(' ');
-var VS_SECOND = 'you your yours'.split(' ');
-var VS_MIN_SPREAD = 0.15;   // mirrors voicemetric.space.MIN_SPREAD
+   That is not tidiness. pages/stylometry.js — the file this engine replaced — drifted
+   precisely because its weights and word lists were typed in by hand and the Python was
+   refitted three times afterwards. Algorithms can be tested for agreement; data that has
+   been copied cannot be, because there is nothing to run. So the data is generated and
+   the algorithms are tested, and neither is left to a comment asking someone to remember. */
 
+var VS_AXES = VM_CONST.AXES;
 function vsSet(list) { var o = {}; list.forEach(function (w) { o[w] = 1; }); return o; }
-var VS_SUB = vsSet(VS_SUBORDINATORS), VS_CONJ = vsSet(VS_CONJUNCTIONS),
-    VS_ART = vsSet(VS_ARTICLES), VS_PRON = vsSet(VS_PRONOUNS),
-    VS_PREP = vsSet(VS_PREPOSITIONS), VS_1P = vsSet(VS_FIRST), VS_2P = vsSet(VS_SECOND);
+
+var VS_AXIS_NAMES = VS_AXES.map(function (a) { return a.name; });
+var VS_MIN_SPREAD = VM_CONST.MIN_SPREAD;
+var VS_SUB = vsSet(VM_CONST.SUBORDINATORS), VS_CONJ = vsSet(VM_CONST.CONJUNCTIONS),
+    VS_ART = vsSet(VM_CONST.ARTICLES), VS_PRON = vsSet(VM_CONST.PRONOUNS),
+    VS_PREP = vsSet(VM_CONST.PREPOSITIONS), VS_1P = vsSet(VM_CONST.FIRST_PERSON),
+    VS_2P = vsSet(VM_CONST.SECOND_PERSON);
 
 function vsSyllables(w) {
   var count = 0, prev = false, i, v;
@@ -463,6 +445,112 @@ function vsRailRow(label, sub, r) {
   ]};
 }
 
+/* ---- the report as Markdown ----
+   Mirrors voicemetric/chart.py:markdown(), and tests/test_pages_parity.py compares the
+   two strings, so the button on the page and `revoice space --report out.md` cannot
+   produce different documents.
+
+   Deliberately not a transcription of the HTML. The page can DRAW an interval; plain
+   text cannot, so this leads with the thing the drawing exists to communicate — whether
+   the intervals overlap — says it in words before any table, and repeats the interval in
+   every row so no number ever appears without one. */
+
+function vsBar(value, width) {
+  width = width || 20;
+  var filled = Math.max(0, Math.min(width, Math.round(value / 100 * width)));
+  return '\u2588'.repeat(filled) + '\u00b7'.repeat(width - filled);
+}
+
+function vsMarkdownReport(items, voice, engine) {
+  var reports = items.map(function (it) { return it.report; });
+  var L = ['# Voice report \u2014 ' + voice, ''];
+  L.push(items.length + ' sample(s) measured against the voice \u201c' + voice + '\u201d.');
+  L.push('');
+
+  var worst = vsWorstOverlap(reports);
+  if (worst) {
+    var gap = Math.abs(worst.a.overall - worst.b.overall);
+    /* Three cases, not two — see chart.py:markdown. Exactly-touching intervals read as
+       "clear by -0.0" before this, and differently in each implementation. */
+    L.push('## What this says', '');
+    if (worst.overlap > 0) {
+      L.push('**The two closest readings differ by ' + gap.toFixed(1) +
+             ' points and their intervals overlap by ' + worst.overlap.toFixed(1) +
+             '.** That ordering is not evidence. Read the per-axis tables, not the ' +
+             'headline numbers.');
+    } else if (worst.overlap === 0) {
+      L.push('**The two closest readings differ by ' + gap.toFixed(1) +
+             ' points and their intervals meet exactly, without overlapping.** That is ' +
+             'the boundary of what this measure can separate \u2014 treat the ordering ' +
+             'as unproven.');
+    } else {
+      L.push('**The two closest readings differ by ' + gap.toFixed(1) +
+             ' points and their intervals clear each other by ' +
+             (-worst.overlap).toFixed(1) + ' points.** That separation is real on this ' +
+             'measure \u2014 though see the limits below.');
+    }
+    L.push('');
+  }
+
+  L.push('## Every reading on one scale', '',
+         '| sample | score | 90% interval | |', '|---|---:|---|---|');
+  items.forEach(function (it) {
+    var r = it.report;
+    var band = r.interval_reliable
+      ? r.low.toFixed(0) + '\u2013' + r.high.toFixed(0)
+      : 'no interval \u2014 too short';
+    L.push('| ' + it.name + ' | ' + r.overall.toFixed(0) + ' | ' + band +
+           ' | `' + vsBar(r.overall) + '` |');
+  });
+  L.push('');
+
+  items.forEach(function (it) {
+    var r = it.report, v = vsVerdict(r);
+    L.push('## ' + it.name, '',
+           '**' + r.overall.toFixed(0) + ' / 100** \u2014 ' + v[0] + '. ' + v[1], '');
+    var ranked = Object.keys(r.axes).map(function (a) { return [a, r.axes[a]]; });
+    ranked.sort(function (x, y) { return x[1].similarity - y[1].similarity; });
+    L.push('| axis | similarity | deviation |', '|---|---:|---:|');
+    ranked.slice(0, 6).forEach(function (e) {
+      L.push('| ' + e[0].replace(/_/g, ' ') + ' | ' + e[1].similarity.toFixed(2) +
+             ' | ' + (e[1].deviation >= 0 ? '+' : '') + e[1].deviation.toFixed(2) + ' |');
+    });
+    L.push('', '*' + r.words + ' words, ' + r.windows + ' window(s).*', '');
+  });
+
+  L.push('## How to read this', '',
+    '- **Score** is 0\u2013100 similarity to the reference voice across 17 named axes.',
+    '- **Interval** is a bootstrap over the document\u2019s own paragraphs: resample them,',
+    '  rescore, and report the middle 90%. It answers *how much would this move if I',
+    '  had been handed a different few pages of the same document?*',
+    '- **Overlapping intervals mean the ordering is not evidence.** Two samples can',
+    '  differ by 9 points and still share 14 points of interval.',
+    '- **Deviation** is signed, in the voice\u2019s own spread: which way, not just how far.',
+    '',
+    '## Limits', '',
+    'This measures **register** \u2014 how a passage is pitched \u2014 far better than it',
+    'measures **authorship**. Under a topic-controlled protocol across 70 authors with',
+    'same-genre negatives it reaches AUC 0.67. Use it to notice that an edit moved your',
+    'register. Do not use it to decide who wrote something.',
+    '');
+  if (engine) L.push('*Generated by revoice \u00b7 ' + engine + '*');
+  return L.join('\n');
+}
+
+/* The pair whose intervals overlap most — the comparison least able to bear weight. */
+function vsWorstOverlap(reports) {
+  var worst = null, i, j, ov;
+  for (i = 0; i < reports.length; i++) {
+    for (j = i + 1; j < reports.length; j++) {
+      ov = vsOverlap(reports[i], reports[j]);
+      if (ov === ov && (worst === null || ov > worst.overlap)) {
+        worst = { a: reports[i], b: reports[j], overlap: ov };
+      }
+    }
+  }
+  return worst;
+}
+
 /* ---- grading a rewrite: did it move, and did it keep the meaning? ----
    Mirrors revoice/voicemetric/transfer.py. Two numbers, never merged: a rewrite that
    nails the punctuation while changing what a sentence claims is a failure, and one
@@ -473,19 +561,12 @@ function vsRailRow(label, sub, r) {
    cannot reproduce. A delta's verdict turns on whether its interval excludes zero, so
    an approximate match would let page and tool disagree about whether a rewrite worked. */
 
-var VS_FUNCTION_WORDS = vsSet(('the of and a to in is that it for on with ' +
-  'as at by this but not are from or an be have ' +
-  'has had was were will would could should so if then than ' +
-  'which who what when where how all any both each few more ' +
-  'most other some such no nor only own same too very can ' +
-  'just don now about into over after').split(' '));
-var VS_NEGATIONS = vsSet(('cannot neither never no nobody none nor not nothing nowhere without').split(' '));
-var VS_HEDGES = vsSet(('apparently appear appears approximately could estimated generally indicate indicates likely may might ' +
-  'perhaps possibly potentially presumably probably roughly seem seems suggest suggested suggests typically ' +
-  'unlikely usually').split(' '));
+var VS_FUNCTION_WORDS = vsSet(VM_CONST.FUNCTION_WORDS);
+var VS_NEGATIONS = vsSet(VM_CONST.NEGATIONS);
+var VS_HEDGES = vsSet(VM_CONST.HEDGES);
 var VS_WORD_RX = /[A-Za-z][A-Za-z'-]*/g;
 var VS_NUMBER_RX = /\d+(?:[.,]\d+)*%?/g;
-var VS_MEANING_FLOOR = 0.75;
+var VS_MEANING_FLOOR = VM_CONST.MEANING_FLOOR;
 var VS_PRESERVATION_FAMILIES = ['numbers', 'entities', 'negation', 'hedges', 'content'];
 
 /* Crude fixed-rule stemming. Must match transfer._stem character for character. */

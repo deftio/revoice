@@ -8,7 +8,8 @@
 <script src="https://cdn.jsdelivr.net/npm/bitwrench/dist/bitwrench.umd.min.js"></script>
 <script src="version.js"></script>
 <script src="site.js"></script>
-<script src="stylometry.js"></script>
+<script src="engine-constants.js"></script>
+<script src="voicemetric.js"></script>
 </head>
 <body>
 <div id="app"></div>
@@ -92,17 +93,25 @@ function analyze(el) {
   if (!VOICES) { results.data = { error: 'baselines still loading…' }; return bw.refresh(el); }
   if (text.trim().length < 40) { results.data = { error: 'Need a bit more text — a paragraph at minimum.' }; return bw.refresh(el); }
 
-  var fp = fingerprint(text), rows = [];
+  /* `rel` is the composite as a percentage of the reference's own self-score, so the
+     registers stay comparable even though each has its own band. Capped at 115: it is a
+     ratio of two numbers that both sit near 55, which amplifies noise at the top end. */
+  var rows = [];
+  var words = 0;
   Object.keys(VOICES).forEach(function (v) {
     Object.keys(VOICES[v]).forEach(function (reg) {
-      var r = score(fp, VOICES[v][reg]);
-      rows.push({ label: v + ' · ' + reg, rel: r.rel,
-                  delta: r.parts.delta.toFixed(2), ngram: r.parts.ngram.toFixed(2),
-                  rhythm: r.parts.rhythm.toFixed(2), punct: r.parts.punct.toFixed(2) });
+      var base = VOICES[v][reg];
+      var r = vmScoreText(text, base);
+      words = r.fingerprint.words;
+      var self = base.self ? base.self[0] : 0;
+      rows.push({ label: v + ' · ' + reg,
+                  rel: self ? Math.min(100 * r.composite / self, 115) : r.composite,
+                  delta: r.components.delta.toFixed(2), ngram: r.components.ngram.toFixed(2),
+                  rhythm: r.components.rhythm.toFixed(2), punct: r.components.punct.toFixed(2) });
     });
   });
   rows.sort(function (a, b) { return b.rel - a.rel; });
-  results.data = { rows: rows, words: fp.words };
+  results.data = { rows: rows, words: words };
   bw.refresh(el);
 }
 

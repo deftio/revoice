@@ -61,6 +61,110 @@ because it measures subject matter — is better calibrated about its own reliab
 the voice composite is, at every length. That argues for calibration work (§6), not for
 putting it back in the score.
 
+### Added — `pages/report.html`, and a Markdown export
+The browser twin of `revoice space --report`. compare.html answers *did this text drift
+from that one*; this answers *of these several samples, which sit closest to this voice,
+and is that ordering worth anything*.
+
+The second half of that question is the design. A ranked list invites the order to be
+read as the result, and on this measure the order is very often noise — two samples can
+differ by 9 points and share 14 points of interval. So the page draws every reading and
+its interval on one scale, states the worst overlap **in words** before anything is
+ranked, and only then shows the axes. The verdict is plain: *"The ranking above is not
+evidence. Hand this page a different few pages of the same documents and the order could
+flip."*
+
+**Markdown export**, by download or copy, and `revoice space --report out.md` writes the
+same document — the suffix picks the format. It is not a transcription of the HTML: the
+page can *draw* an interval and plain text cannot, so the Markdown leads with the overlap
+in words, repeats the interval in every table row so no number ever appears without one,
+and carries its own limits section, because someone will paste it into a pull request
+where nobody has read `docs/metrics.md`.
+
+`tests/test_pages_parity.py` asserts the page's export and the CLI's output are identical
+strings. That caught two things the eye would not: an exactly-touching pair of intervals
+reported as *"clear by −0.0 points"* — nonsense in both implementations, and formatted
+differently by each, since Python prints negative zero and JavaScript's `toFixed` does not
+— and a straight apostrophe against a curly one. The first is now a third case with its
+own wording.
+
+### Changed — one engine, not three
+The browser had its own stylometry and it had drifted badly. `pages/stylometry.js` began
+as "a JS port of the demo subset"; Python was then refitted three times and grew six
+components; nothing compared them. `scripts/export_demo_baselines.py` carried a *third*
+copy, under a docstring that said "keep the weights in sync". They were not in sync:
+
+| | Python (fitted) | page (hand-typed) |
+|---|---|---|
+| components | 10 | 4 |
+| `ngram` | 0.181 | **0.600** |
+| `punct` | 0.332 | 0.100 |
+| `rhythm` | **0.000** (measured as noise) | 0.100 |
+| `richness`, `structure` | 0.104, 0.064 | absent |
+
+Measured on 112 trials across 28 authors: Python **AUC 0.793**, the page **0.688**, and
+the sigma the page led with **0.662**. On one case it inverted outright — it ranked
+Twain's own other work as *less* like Twain than Bret Harte.
+
+Now there is one engine. **`pages/voicemetric.js`** is a full port of `features.py` +
+`baseline.py` and agrees with the Python composite on **112 of 112 trials**, AUC 0.793 to
+0.793. `stylometry.js` is deleted; `export_demo_baselines.py` calls the real
+`baseline_from_texts` / `score_text`.
+
+**What keeps it ported**, since asking people to remember plainly did not:
+
+- **Data is generated.** `pages/engine-constants.js` is written out of Python by
+  `export_demo_baselines.py` — every word list, bin edge, weight, axis, punctuation set.
+  `voicespace.js` was migrated onto it too, so nothing on either side is hand-typed data.
+  A generated constant cannot be edited into disagreement, and hand-copied data is what
+  actually drifted.
+- **Algorithms are tested.** `tests/test_pages_parity.py` runs the real JavaScript under
+  node against the real Python on corpus fixtures: all 29 fingerprint fields, the
+  composite, all ten components, the weights, every generated constant, and a staleness
+  check that regenerating is a no-op.
+- **New code cannot skip the net.** `test_every_ported_function_has_a_python_counterpart_under_test`
+  enumerates the JS exports and fails on any that is neither paired with a Python
+  function nor declared page-only below an explicit marker.
+
+Agreement is to a stated tolerance per family, not bit-exact. The residual is rounding —
+Python breaks exact ties to even, JavaScript away from zero, and `fingerprint()` rounds
+~25 values, so a ratio like 1/32 differs in the fourth place. Emulating that costs real
+complexity in the hot path and is invisible against a composite reported to one decimal.
+A *missing component or a wrong weight* moves a composite by whole points, and that is
+what the tolerances forbid.
+
+`pages/compare.html` now shows all ten components with the weight each carries, so a
+family the bench fitted to zero reads as `0.000 · noise` rather than being quietly
+dropped, and the "biggest movement" line ignores families that carry no weight.
+
+### Added — `bench.interval_coverage`, which tests the part we trusted most
+Every report here leads with a confidence interval, and this project's whole argument for
+them is that a bare number invites a decision it cannot support. That argument is worth
+exactly as much as the interval's coverage, and coverage had never been measured. It is
+now, on 841 documents:
+
+- **On differences — calibrated.** Split a document's windows into halves whose true
+  difference is zero by construction, bootstrap that difference the way `style_delta`
+  does, and the 90% interval contains zero **91.6%** of the time (95% → 95.8%). The
+  construction behind the rail, the `moved` verdict and `rewrite-score` holds up.
+- **On absolute levels — thin-tailed.** Error is ~0 at the median and grows with the
+  level: a nominal 95% interval behaves like **86%**. Misses are one-sided, **205 above
+  the band against 74 below**, so the *upper* edge of a similarity interval is not a bound
+  to lean on. "This is clearly not a match" is the claim to distrust first.
+- **Cllr_cal is ~0.007** — essentially none of the Cllr cost is miscalibration. The scores
+  are well-calibrated statements of near-ignorance, which is the good version of a bad
+  number. It also means the whole prize is in discrimination, not calibration.
+
+Not fixed: BCa would be the standard remedy for the skew, and applying it moves every
+published interval. The finding goes in the record first.
+
+Writing the test wrong was itself instructive. The intuitive version — build the interval
+from half A, check whether half B's reading lands in it — is **pessimistic by √2**,
+because A's band carries A's noise while B's point carries its own. A perfectly calibrated
+90% interval scores 0.755 on it. The first run looked like a 19-point overconfidence
+scandal and was mostly test geometry; `_normal_pair_expectation` now prints the corrected
+benchmark beside the observed number so nobody repeats the mistake.
+
 ### Fixed — a claim this package made about itself
 `yules_k` asserted, in its own docstring and with no source, that Yule's K "does NOT
 drift with text length". **Tweedie & Baayen (1998)** measured that whole family of

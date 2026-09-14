@@ -589,9 +589,11 @@ def space(
                              help="Write the axis chart for a single --text here "
                                   "(dependency-free SVG, embeddable anywhere)."),
     report: Path = typer.Option(None, "--report",
-                                help="Write a full standalone HTML report for all --text "
-                                     "samples: every reading on one scale with its interval, "
-                                     "then the axes for each. No scripts, no network."),
+                                help="Write a full report for all --text samples: every "
+                                     "reading on one scale with its interval, then the axes "
+                                     "for each. A .md suffix writes Markdown (for an issue "
+                                     "or a PR); anything else writes standalone HTML with "
+                                     "no scripts and no network."),
     replicates: int = typer.Option(400, "--replicates",
                                    help="Bootstrap resamples behind the confidence interval."),
     as_json: bool = typer.Option(False, "--json"),
@@ -665,10 +667,15 @@ def space(
             return
 
         d = describe()
-        html = voicechart.report(items, voice=against,
-                                 engine=f"voicemetric {d['version']} ({d['signature']})")
+        engine = f"voicemetric {d['version']} ({d['signature']})"
         out = report or Path(f"voice-report-{against}.html")
-        out.write_text(html)
+        # The suffix picks the format: .md for an issue or a PR, anything else for the
+        # standalone page. Same content either way — Markdown leads with the overlap in
+        # words, because plain text cannot draw an interval.
+        if out.suffix.lower() in (".md", ".markdown"):
+            out.write_text(voicechart.markdown(items, voice=against, engine=engine))
+        else:
+            out.write_text(voicechart.report(items, voice=against, engine=engine))
 
         typer.secho(f"{len(items)} sample(s) vs '{against}'", bold=True)
         for label, _, r in sorted(items, key=lambda it: -it[2]["overall"]):

@@ -803,3 +803,144 @@ def test_a_document_that_reaches_only_one_grid_point_is_skipped():
     # 50 is reachable, 100 is not: one point, no correlation, document skipped
     assert length_sensitivity(docs, lengths=(50, 100))["n_docs"] == 0
     assert length_sensitivity(docs, lengths=(20, 50))["n_docs"] == 1
+
+
+# ---------------------------------------------------------------------------------
+# Interval coverage.
+#
+# Every report this package emits leads with an interval and argues the interval is the
+# honest part. That argument is worth exactly as much as its coverage, which had never
+# been measured until these existed.
+
+def _coverage_docs(n: int = 8):
+    """Documents with enough paragraphs to split into two halves of three windows each."""
+    from revoice.voicemetric.bench import Doc
+
+    long_para = ("The committee reviewed the proposal at some length and, after a "
+                 "discussion of the alternatives before it, resolved to defer the "
+                 "decision until a later session when further evidence would be to hand. "
+                 "Several members dissented from that view and said so at the time. ")
+    short_para = ("It failed. We fixed it. It passed. Nobody was much surprised. "
+                  "The report went out the same day. ")
+    out = []
+    for i in range(n):
+        paras = [(long_para if (i + j) % 2 else short_para) * 3 for j in range(22)]
+        out.append(Doc(author=f"a{i % 3}", work=f"w{i}", register="test",
+                       path=f"a{i % 3}/{i}.md", text="\n\n".join(paras)))
+    return out
+
+
+def _population(docs):
+    from revoice.voicemetric.space import Population
+
+    return Population.fit([d.text for d in docs])
+
+
+def test_interval_coverage_reports_both_tests():
+    from revoice.voicemetric.bench import interval_coverage
+
+    docs = _coverage_docs()
+    r = interval_coverage(docs, _population(docs), levels=(0.8, 0.9), replicates=60)
+    assert r["n"] > 0
+    assert set(r["null_difference"]) == {0.8, 0.9}
+    assert set(r["half_vs_half"]) == {0.8, 0.9}
+    for e in r["null_difference"].values():
+        assert 0.0 <= e["covered"] <= 1.0
+
+
+def test_the_half_vs_half_benchmark_is_the_corrected_one_not_the_nominal():
+    """The whole point of `expected`: the intuitive test is pessimistic by √2, and
+    without the benchmark beside it the raw number reads as a damning result."""
+    from revoice.voicemetric.bench import _normal_pair_expectation, interval_coverage
+
+    docs = _coverage_docs()
+    r = interval_coverage(docs, _population(docs), levels=(0.9,), replicates=60)
+    assert r["half_vs_half"][0.9]["expected"] == pytest.approx(0.755, abs=0.002)
+    assert _normal_pair_expectation(0.9) < 0.9        # strictly pessimistic
+    assert _normal_pair_expectation(0.5) < _normal_pair_expectation(0.95)
+
+
+def test_a_wider_nominal_level_covers_at_least_as_often():
+    """Bands must nest. They only do because every level shares one bootstrap seed per
+    document; separate draws could cross."""
+    from revoice.voicemetric.bench import interval_coverage
+
+    docs = _coverage_docs()
+    r = interval_coverage(docs, _population(docs), levels=(0.5, 0.95), replicates=80)
+    assert r["null_difference"][0.95]["covered"] >= r["null_difference"][0.5]["covered"]
+    assert r["half_vs_half"][0.95]["covered"] >= r["half_vs_half"][0.5]["covered"]
+
+
+def test_documents_without_a_second_work_are_skipped():
+    """A region has to hold the document's own work out, or it has read what it scores."""
+    from revoice.voicemetric.bench import Doc, interval_coverage
+
+    docs = _coverage_docs()
+    only_one_work = [Doc(author="solo", work="w", register="t", path="solo/1.md",
+                         text=d.text) for d in docs[:3]]
+    r = interval_coverage(only_one_work, _population(docs), levels=(0.9,), replicates=40)
+    assert r["n"] == 0
+    assert r["null_difference"][0.9]["covered"] != r["null_difference"][0.9]["covered"]
+
+
+def test_documents_with_too_few_windows_are_skipped():
+    from revoice.voicemetric.bench import interval_coverage
+
+    docs = _coverage_docs()
+    r = interval_coverage(docs, _population(docs), levels=(0.9,), replicates=40,
+                          min_windows=10 ** 4)
+    assert r["n"] == 0
+
+
+def test_the_coverage_table_flags_a_miscalibrated_interval():
+    from revoice.voicemetric.bench import render_interval_coverage
+
+    narrow = {"n": 100,
+              "null_difference": {0.9: {"nominal": 0.9, "covered": 0.60}},
+              "half_vs_half": {0.9: {"nominal": 0.9, "covered": 0.5, "expected": 0.755}},
+              "median_width_at_90": 12.0, "median_null_width_at_90": 17.0,
+              "misses_low": 10, "misses_high": 30}
+    text = render_interval_coverage(narrow)
+    assert "too narrow: overconfident" in text
+    wide = json.loads(json.dumps(narrow))
+    wide["null_difference"] = {"0.9": {"nominal": 0.9, "covered": 0.99}}
+    assert "power left unused" in render_interval_coverage(wide)
+
+
+def test_report_from_windows_is_the_same_estimator_the_report_ships():
+    """Coverage must exercise the shipped estimator, not a second copy of its arithmetic."""
+    from revoice.voicemetric.space import (
+        Population,
+        VoiceRegion,
+        report_from_windows,
+        similarity_report,
+        windows,
+    )
+
+    docs = _coverage_docs()
+    pop = Population.fit([d.text for d in docs])
+    region = VoiceRegion.fit("a", [docs[1].text, docs[2].text], pop)
+    text = docs[0].text
+    zs = [pop.standardize(w) for w in windows(text)]
+
+    direct = report_from_windows(zs, region, words=len(text.split()))
+    via_text = similarity_report(text, region, pop)
+    assert direct == via_text
+
+
+def test_a_document_that_splits_into_an_unusable_half_is_skipped():
+    """min_windows lets a 5-window document through, but dealing it alternately leaves
+    halves of 3 and 2 — and two windows cannot bound their own mean."""
+    from revoice.voicemetric.bench import interval_coverage
+    from revoice.voicemetric.space import windows
+
+    docs = _coverage_docs()
+    trimmed = []
+    for d in docs:
+        ws = windows(d.text)[:5]
+        trimmed.append(type(d)(author=d.author, work=d.work, register=d.register,
+                               path=d.path, text="\n\n".join(ws)))
+    assert len(windows(trimmed[0].text)) == 5
+    r = interval_coverage(trimmed, _population(docs), levels=(0.9,), replicates=40,
+                          min_windows=4)
+    assert r["n"] == 0
