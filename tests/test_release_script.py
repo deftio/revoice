@@ -342,46 +342,79 @@ def test_missing_tools_say_how_to_install_them():
     assert "brew install gh" in src
 
 
-@bash
-def test_it_works_in_a_detached_head_checkout_like_CI():
-    """A GitHub Actions `pull_request` checkout is a detached HEAD at refs/pull/N/merge
-    with no local branches — and it is the environment whose opinion decides the release.
+def _ci_like_checkout(tmp: Path) -> Path:
+    """A standalone repo shaped like `actions/checkout` on a pull_request.
 
-    Requiring a local `main` made the script die in preflight there, before reaching a
-    single gate, which took five of the tests above down with it. The verify path must
-    work from a detached HEAD; only publishing needs a branch.
+    Detached HEAD, NO branches, NO remotes. A `git worktree` is not good enough and
+    getting that wrong cost a CI round trip: a worktree shares the parent repository's
+    refs, so origin/main is visible inside it and a fix that depends on origin/main
+    passes there while still failing in CI.
+    """
+    import subprocess as sp
+
+    wt = tmp / "ci-like"
+    wt.mkdir()
+    def run_git(*a):
+        return sp.run(["git", *a], cwd=wt, capture_output=True, text=True)
+
+    sp.run(["git", "init", "-q", "-b", "tmpbranch", str(wt)], capture_output=True)
+    run_git("config", "user.email", "t@example.com")
+    run_git("config", "user.name", "t")
+    for rel in ("scripts", "revoice", "tests", "pages"):
+        (wt / rel).mkdir(parents=True, exist_ok=True)
+    (wt / "scripts" / "release.sh").write_bytes(SCRIPT.read_bytes())
+    (wt / "scripts" / "release.sh").chmod(0o755)
+    (wt / "revoice" / "__init__.py").write_text('__version__ = "9.9.9"\n')
+    (wt / "CHANGELOG.md").write_text("# Changelog\n\n## 9.9.9 (unreleased)\n\nnotes\n")
+    run_git("add", "-A")
+    run_git("commit", "-qm", "init")
+    run_git("checkout", "-q", "--detach")
+    run_git("branch", "-D", "tmpbranch")
+    return wt
+
+
+@bash
+def test_it_works_in_a_ci_style_detached_checkout():
+    """The verify path must run with no branches and no remotes — that is what CI has.
+
+    Requiring a main branch here made the script die in preflight in CI, before reaching
+    a single gate, and took five of the tests above with it.
     """
     import subprocess as sp
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
-        wt = Path(tmp) / "detached"
-        add = sp.run(["git", "worktree", "add", "-q", "--detach", str(wt), "HEAD"],
-                     cwd=ROOT, capture_output=True, text=True)
-        if add.returncode != 0:
-            pytest.skip(f"cannot create a worktree here: {add.stderr.strip()}")
-        try:
-            # the script under test, not the committed one
-            (wt / "scripts" / "release.sh").write_bytes(SCRIPT.read_bytes())
-            (wt / "scripts" / "release.sh").chmod(0o755)
-            assert sp.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=wt,
-                          capture_output=True, text=True).stdout.strip() == "HEAD"
+        wt = _ci_like_checkout(Path(tmp))
+        # `git branch` prints a "(HEAD detached at ...)" pseudo-entry even with --format,
+        # so count real refs instead — that is what "no branches" has to mean here.
+        refs = sp.run(["git", "for-each-ref", "--format=%(refname)", "refs/heads/"],
+                      cwd=wt, capture_output=True, text=True).stdout.strip()
+        assert refs == "", f"the fixture should have no branches, has: {refs}"
+        assert sp.run(["git", "remote"], cwd=wt, capture_output=True,
+                      text=True).stdout.strip() == "", "the fixture should have no remotes"
 
-            env = {"NO_COLOR": "1", "PATH": __import__("os").environ["PATH"],
-                   "HOME": __import__("os").environ["HOME"]}
-            r = sp.run([str(wt / "scripts" / "release.sh")], cwd=wt, env=env,
-                       capture_output=True, text=True, timeout=180)
-            combined = r.stdout + r.stderr
-            # it must get PAST preflight — the old failure died right here
-            assert "no 'main' branch here" not in combined, combined[:400]
-            assert "exists only as origin/main" in combined
+        env = {"NO_COLOR": "1", "PATH": __import__("os").environ["PATH"],
+               "HOME": __import__("os").environ["HOME"]}
+        r = sp.run([str(wt / "scripts" / "release.sh")], cwd=wt, env=env,
+                   capture_output=True, text=True, timeout=180)
+        combined = r.stdout + r.stderr
+        # it must reach the GATES, not die on the branch check
+        assert "branch here" not in combined, combined[:400]
+        assert "(unreleased)" in combined, f"never reached the changelog gate:\n{combined[:400]}"
 
-            # publishing from a detached HEAD is refused, with the checkout command
-            r2 = sp.run([str(wt / "scripts" / "release.sh"), "--pr"], cwd=wt, env=env,
-                        capture_output=True, text=True, timeout=180)
-            assert r2.returncode != 0
-            assert "HEAD is detached" in r2.stderr
-            assert "git checkout main" in r2.stderr
-        finally:
-            sp.run(["git", "worktree", "remove", "--force", str(wt)],
-                   cwd=ROOT, capture_output=True)
+
+@bash
+def test_publishing_from_a_ci_style_checkout_is_refused_with_the_fix():
+    """Verifying does not need a branch; publishing does, and says so."""
+    import subprocess as sp
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        wt = _ci_like_checkout(Path(tmp))
+        env = {"NO_COLOR": "1", "PATH": __import__("os").environ["PATH"],
+               "HOME": __import__("os").environ["HOME"]}
+        r = sp.run([str(wt / "scripts" / "release.sh"), "--pr"], cwd=wt, env=env,
+                   capture_output=True, text=True, timeout=180)
+        assert r.returncode != 0
+        assert "HEAD is detached" in r.stderr or "no 'main' branch" in r.stderr
+        assert "git checkout" in r.stderr or "git fetch" in r.stderr

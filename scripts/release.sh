@@ -166,28 +166,30 @@ fi
 step "Preflight"
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
-# The branch may exist only as a remote ref. A GitHub Actions `pull_request` checkout is
-# a DETACHED HEAD at refs/pull/N/merge with no local branches at all, and the verify
-# stages below are exactly what should run there — so requiring a local branch made the
-# script unusable in the one environment whose opinion actually decides the release.
-if git rev-parse --verify "$MAIN_BRANCH" >/dev/null 2>&1; then
-  :
-elif git rev-parse --verify "origin/$MAIN_BRANCH" >/dev/null 2>&1; then
-  note "'$MAIN_BRANCH' exists only as origin/$MAIN_BRANCH (detached or fresh checkout)"
-else
-  die "no '$MAIN_BRANCH' branch here, locally or on origin.
-       Branches present: $(git branch -a --format='%(refname:short)' | tr '\n' ' ')
-       Choose one with:  $0 --main-branch <name>"
-fi
-
-# Detached HEAD is fine for verifying. It is not fine for publishing: there would be no
-# branch to cut the release from and nothing to push.
-if [ "$BRANCH" = "HEAD" ] && [ "$DO_PR" -eq 1 ]; then
-  die "HEAD is detached, so there is no branch to release from.
+# The main branch is needed to PUBLISH — it is the PR base and the merge target. It is
+# not needed to verify, and demanding it here made the script unusable in the one
+# environment whose opinion decides the release: `actions/checkout` on a pull_request
+# fetches only refs/pull/N/merge at depth 1, so the checkout is a detached HEAD with no
+# local branches AND no remote-tracking refs. Not even origin/main exists.
+#
+# This took two attempts. The first fix accepted origin/main as a fallback and was
+# verified against a `git worktree`, which shares the parent repository's refs — so
+# origin/main was there and the reproduction passed while CI kept failing. The test
+# below now builds a standalone repository with no remotes and no branches, which is
+# what CI actually hands you.
+if [ "$DO_PR" -eq 1 ]; then
+  if [ "$BRANCH" = "HEAD" ]; then
+    die "HEAD is detached, so there is no branch to release from.
        Check out the branch you mean to ship:
          git checkout $MAIN_BRANCH
        Or verify and build without publishing:
          $0"
+  fi
+  git rev-parse --verify "$MAIN_BRANCH" >/dev/null 2>&1 \
+    || die "no '$MAIN_BRANCH' branch here, and --pr needs it as the base of the PR.
+       Branches present: $(git branch --format='%(refname:short)' | tr '\n' ' ')
+       Fetch it:         git fetch origin $MAIN_BRANCH:$MAIN_BRANCH
+       Or name another:  $0 --main-branch <name> ${ORIGINAL_ARGS[*]-}"
 fi
 
 # The version is READ, never written. revoice/__init__.py is the single source of truth;
@@ -244,6 +246,10 @@ step "Consistency"
 # The CHANGELOG check reports WHICH of the three ways it can be wrong, and hands back the
 # exact line to change. "write the notes before releasing" is a diagnosis; a sed command
 # with today's date already in it is an instruction.
+# `VAR=$(cmd)` under `set -e` exits the script when cmd fails, so the branches below
+# that exist precisely to HANDLE a failure could never run. Both captures suspend
+# errexit deliberately and inspect the status themselves.
+set +e
 CHANGELOG_PROBLEM=$("$PY" - "$VERSION" <<'CHECK_EOF'
 import pathlib, re, sys
 v = sys.argv[1]
@@ -261,6 +267,10 @@ entry = (body[:nxt.start()] if nxt else body).strip()
 print("empty" if len(entry) < 40 else "ok")
 CHECK_EOF
 )
+CHANGELOG_RC=$?
+set -e
+[ "$CHANGELOG_RC" -eq 0 ] || die "could not read CHANGELOG.md.
+       Check that it exists and is readable:  ls -l CHANGELOG.md"
 TODAY=$(date -u +%Y-%m-%d)
 case "$CHANGELOG_PROBLEM" in
   ok) ok "CHANGELOG has dated notes for $VERSION" ;;
@@ -295,14 +305,22 @@ else
        "  uv sync --all-extras"
 fi
 
-if uv run --quiet python scripts/export_demo_baselines.py --check >/dev/null 2>&1; then
-  ok "pages/version.js, population.json, voices.json and engine-constants.js are current"
-else
-  need "the site's generated files are stale (the pages would ship the wrong version or weights)" \
-       "Regenerate and commit them:" \
-       "  python scripts/export_demo_baselines.py" \
-       "  git add pages/ && git commit -m \"Regenerate site data for $VERSION\""
-fi
+# Exit 2 means "cannot verify here", not "stale" — the population was built from a
+# corpus this checkout does not have, and regenerating would replace it with a smaller
+# one. Telling someone to regenerate in that state is an instruction to break the file.
+set +e
+GEN_OUT=$(uv run --quiet python scripts/export_demo_baselines.py --check 2>&1)
+GEN_RC=$?
+set -e
+case "$GEN_RC" in
+  0) ok "pages/version.js, population.json, voices.json and engine-constants.js are current" ;;
+  2) need "the generated site files cannot be verified in this checkout" \
+          "$(printf '%s' "$GEN_OUT" | sed 's/^/  /')" ;;
+  *) need "the site's generated files are stale (the pages would ship the wrong version or weights)" \
+          "Regenerate and commit them:" \
+          "  python scripts/export_demo_baselines.py" \
+          "  git add pages/ && git commit -m \"Regenerate site data for $VERSION\"" ;;
+esac
 
 # Everything above is a repo-state problem with a known fix, so they are reported
 # together. Nothing below this line can be answered by a command you type once.

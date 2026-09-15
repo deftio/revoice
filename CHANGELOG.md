@@ -62,6 +62,37 @@ the voice composite is, at every length. That argues for calibration work (§6),
 putting it back in the score.
 
 ### Fixed — `release.sh` died in CI, which is the one place it has to work
+`actions/checkout` on a `pull_request` fetches only `refs/pull/N/merge` at depth 1: the
+checkout is a detached HEAD with **no branches and no remote-tracking refs**. The script
+required a local `main`, so in CI it died in preflight before reaching a single gate, and
+took five of its own tests down with it. The release PR going red is how this surfaced.
+
+The main branch is only needed to *publish* — it is the PR base. Verifying does not need
+it, and now does not ask for it. Publishing from a detached HEAD is refused with the
+checkout command.
+
+**It took two attempts, for a reason worth recording.** The first fix accepted
+`origin/main` as a fallback and was verified against a `git worktree` — which shares the
+parent repository's refs, so `origin/main` was present and the reproduction passed while
+CI kept failing. A worktree is not a fresh clone. The regression test now builds a
+standalone repository with no branches and no remotes, which is what CI actually hands
+you, and asserts the script reaches the gates rather than dying before them.
+
+That fixture immediately found a second bug it had been hiding: `VAR=$(cmd)` under
+`set -e` exits the script when `cmd` fails, so the branch added to *handle* a failing
+check could never run — the script died with the raw exit status and printed nothing.
+Both captures now suspend errexit and inspect the status themselves.
+
+### Fixed — generated-file staleness could not be told apart from "cannot check here"
+`bench-corpus/` is fetched data and gitignored, so a fresh clone does not have it and
+`export_demo_baselines.py` silently falls back to `examples/voices` — 4 voices instead of
+1,594 documents. `--check` then reported the committed `population.json` as **stale**,
+and following its advice would have regenerated it from the fallback and committed a
+materially different file. It now compares the source recorded in the file against what
+the checkout actually has, exits 2 for "cannot verify here", and tells you to fetch the
+corpus rather than to overwrite the file.
+
+
 A GitHub Actions `pull_request` checkout is a **detached HEAD** at `refs/pull/N/merge`
 with no local branches. The script required a local `main` to exist, so in CI it died in
 preflight before reaching a single gate — and took five of its own tests down with it,

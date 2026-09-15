@@ -254,6 +254,33 @@ def export_constants(quiet: bool = False) -> None:
               f"{len(payload)} constant groups)")
 
 
+def _population_source_available() -> tuple[bool, str, str]:
+    """Can this checkout reproduce the committed population? (ok, committed, available)
+
+    `bench-corpus/` is fetched data and gitignored, so a fresh clone does not have it and
+    `export_population` silently falls back to `examples/voices` — 4 voices instead of
+    1,594 documents. The generated file records which source produced it, so the mismatch
+    is detectable, and it must be detected: without this, `--check` reports "stale" in
+    any checkout without the corpus, and following its advice would regenerate the
+    population from the fallback and commit a materially different file.
+
+    Reporting "I cannot verify this here" is the honest answer. Reporting "stale" is an
+    instruction to break it.
+    """
+    committed = ""
+    if POP_OUT.is_file():
+        try:
+            committed = json.loads(POP_OUT.read_text()).get("source", "")
+        except (json.JSONDecodeError, OSError):
+            committed = ""
+    available = ""
+    for root in POPULATION_SOURCES:
+        if root.is_dir():
+            available = root.name
+            break
+    return (not committed or not available or committed == available), committed, available
+
+
 def check() -> int:
     """Verify the generated files are current, writing nothing.
 
@@ -261,6 +288,16 @@ def check() -> int:
     authors code, and then what ships is not what was reviewed and tested — so release
     checks, and the developer regenerates as part of normal work.
     """
+    ok_source, committed, available = _population_source_available()
+    if not ok_source:
+        print(f"cannot verify the generated files here: pages/demo/population.json was "
+              f"built from '{committed}', but this checkout only has '{available}'.",
+              file=sys.stderr)
+        print(f"Regenerating would REPLACE it with a smaller, different population.\n"
+              f"Fetch the corpus first:\n"
+              f"    python scripts/fetch_bench_corpus.py\n"
+              f"or run this check on a checkout that has {committed}/.", file=sys.stderr)
+        return 2
     before = {f: f.read_bytes() if f.is_file() else None for f in (OUT, POP_OUT, VERSION_OUT, CONSTANTS_OUT)}
     main(quiet=True)
     stale = [f.name for f, prior in before.items() if f.read_bytes() != prior]
