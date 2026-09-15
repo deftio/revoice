@@ -61,6 +61,35 @@ because it measures subject matter — is better calibrated about its own reliab
 the voice composite is, at every length. That argues for calibration work (§6), not for
 putting it back in the score.
 
+### Fixed — `release.sh` died in CI, which is the one place it has to work
+A GitHub Actions `pull_request` checkout is a **detached HEAD** at `refs/pull/N/merge`
+with no local branches. The script required a local `main` to exist, so in CI it died in
+preflight before reaching a single gate — and took five of its own tests down with it,
+which is how this was found: the release PR's CI run went red.
+
+The branch is now accepted as `main` *or* `origin/main`, and a detached HEAD is fine for
+verifying. Only publishing needs a branch, and asking to publish from a detached HEAD is
+refused with the checkout command. A regression test builds a real detached worktree and
+drives the script through it.
+
+### Fixed — `release.sh` ran CI's gates in an environment CI does not use
+The test gate claimed to run "the same gates CI runs" while running them somewhere
+else. `.github/workflows/ci.yml` does `uv sync --all-extras` and installs the test
+tools first; the script did neither, so `tests/test_core_extra.py` exercised
+`.docx`/`.pptx`/`.pdf` extraction with those libraries absent and failed three times for
+a reason that had nothing to do with the release. The script now prepares the same
+environment before testing.
+
+That is not a breach of the read-only contract. The contract is about what gets
+**committed and shipped** — no version bumps, no changelog edits, no regenerated site
+data. `.venv/` is gitignored and is not part of what ships, and refusing to prepare it
+meant the local gates quietly tested something other than what CI tests, which is the
+exact failure the contract exists to prevent.
+
+Also: the undated-changelog message suggested `sed -i ''`, which is correct on BSD and
+broken on GNU. Suggesting a command that fails is worse than suggesting none, so the
+script detects which `sed` is installed and emits that one.
+
 ### Changed — `release.sh` now tells you what to type
 Every gate that can refuse a release hands back the command that fixes it, and the
 repo-state gates are collected so three problems take one run instead of three:

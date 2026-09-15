@@ -165,9 +165,30 @@ fi
 # ------------------------------------------------------ 1. what are we releasing? ----
 step "Preflight"
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
-git rev-parse --verify "$MAIN_BRANCH" >/dev/null 2>&1 || die "no '$MAIN_BRANCH' branch here.
-       Branches present: $(git branch --format='%(refname:short)' | tr '\n' ' ')
+
+# The branch may exist only as a remote ref. A GitHub Actions `pull_request` checkout is
+# a DETACHED HEAD at refs/pull/N/merge with no local branches at all, and the verify
+# stages below are exactly what should run there — so requiring a local branch made the
+# script unusable in the one environment whose opinion actually decides the release.
+if git rev-parse --verify "$MAIN_BRANCH" >/dev/null 2>&1; then
+  :
+elif git rev-parse --verify "origin/$MAIN_BRANCH" >/dev/null 2>&1; then
+  note "'$MAIN_BRANCH' exists only as origin/$MAIN_BRANCH (detached or fresh checkout)"
+else
+  die "no '$MAIN_BRANCH' branch here, locally or on origin.
+       Branches present: $(git branch -a --format='%(refname:short)' | tr '\n' ' ')
        Choose one with:  $0 --main-branch <name>"
+fi
+
+# Detached HEAD is fine for verifying. It is not fine for publishing: there would be no
+# branch to cut the release from and nothing to push.
+if [ "$BRANCH" = "HEAD" ] && [ "$DO_PR" -eq 1 ]; then
+  die "HEAD is detached, so there is no branch to release from.
+       Check out the branch you mean to ship:
+         git checkout $MAIN_BRANCH
+       Or verify and build without publishing:
+         $0"
+fi
 
 # The version is READ, never written. revoice/__init__.py is the single source of truth;
 # pyproject.toml derives from it and the site is generated from it.

@@ -340,3 +340,48 @@ def test_missing_tools_say_how_to_install_them():
     assert "astral.sh/uv/install.sh" in src or "brew install uv" in src
     assert "gh auth login" in src
     assert "brew install gh" in src
+
+
+@bash
+def test_it_works_in_a_detached_head_checkout_like_CI():
+    """A GitHub Actions `pull_request` checkout is a detached HEAD at refs/pull/N/merge
+    with no local branches — and it is the environment whose opinion decides the release.
+
+    Requiring a local `main` made the script die in preflight there, before reaching a
+    single gate, which took five of the tests above down with it. The verify path must
+    work from a detached HEAD; only publishing needs a branch.
+    """
+    import subprocess as sp
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        wt = Path(tmp) / "detached"
+        add = sp.run(["git", "worktree", "add", "-q", "--detach", str(wt), "HEAD"],
+                     cwd=ROOT, capture_output=True, text=True)
+        if add.returncode != 0:
+            pytest.skip(f"cannot create a worktree here: {add.stderr.strip()}")
+        try:
+            # the script under test, not the committed one
+            (wt / "scripts" / "release.sh").write_bytes(SCRIPT.read_bytes())
+            (wt / "scripts" / "release.sh").chmod(0o755)
+            assert sp.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=wt,
+                          capture_output=True, text=True).stdout.strip() == "HEAD"
+
+            env = {"NO_COLOR": "1", "PATH": __import__("os").environ["PATH"],
+                   "HOME": __import__("os").environ["HOME"]}
+            r = sp.run([str(wt / "scripts" / "release.sh")], cwd=wt, env=env,
+                       capture_output=True, text=True, timeout=180)
+            combined = r.stdout + r.stderr
+            # it must get PAST preflight — the old failure died right here
+            assert "no 'main' branch here" not in combined, combined[:400]
+            assert "exists only as origin/main" in combined
+
+            # publishing from a detached HEAD is refused, with the checkout command
+            r2 = sp.run([str(wt / "scripts" / "release.sh"), "--pr"], cwd=wt, env=env,
+                        capture_output=True, text=True, timeout=180)
+            assert r2.returncode != 0
+            assert "HEAD is detached" in r2.stderr
+            assert "git checkout main" in r2.stderr
+        finally:
+            sp.run(["git", "worktree", "remove", "--force", str(wt)],
+                   cwd=ROOT, capture_output=True)
