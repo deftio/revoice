@@ -424,3 +424,45 @@ def test_publishing_from_a_ci_style_checkout_is_refused_with_the_fix():
         else:
             assert "HEAD is detached" in r.stderr or "no 'main' branch" in r.stderr
             assert "git checkout" in r.stderr or "git fetch" in r.stderr
+
+
+@bash
+def test_no_bash_version_sensitive_constructs():
+    """Constructs that one bash accepts and another rejects.
+
+    macOS ships bash 3.2; CI runs bash 5. `${#arr[@]}` on an empty array is an
+    unbound-variable error under `set -u` on 3.2, and the obvious guard for it —
+    `${#arr[@]-0}` — is a "bad substitution" on 5, because `${#...}` takes no default.
+    The script passed `bash -n` locally and died on every gate in CI. This is the static
+    check that would have caught it without a round trip.
+    """
+    import re
+
+    # Comments are stripped first. The script CARRIES a comment explaining this exact
+    # pitfall, and the naive version of this check flagged its own documentation — the
+    # third time in this file that scanning source text for a pattern has matched the
+    # text that explains the pattern.
+    src = re.sub(r'^\s*#.*$', '', SCRIPT.read_text(), flags=re.M)
+    bad = re.findall(r'\$\{#[A-Za-z_][A-Za-z0-9_]*\[[@*]\][-:+?][^}]*\}', src)
+    assert not bad, (
+        f"${{#array[@]}} with a default is a bad substitution on bash 5: {bad}. "
+        "Track the count in a plain integer variable instead.")
+
+
+@bash
+def test_the_script_parses_under_a_modern_bash_too():
+    """`bash -n` only ever checks the bash you happen to have. On macOS that is 3.2,
+    which is not what CI runs, so a second opinion is worth having when one is around."""
+    import os
+    import shutil
+    import subprocess as sp
+
+    for candidate in ("/opt/homebrew/bin/bash", "/usr/local/bin/bash", shutil.which("bash")):
+        if not candidate or not os.path.exists(candidate):
+            continue
+        ver = sp.run([candidate, "-c", "echo $BASH_VERSINFO"], capture_output=True, text=True)
+        if ver.returncode == 0 and ver.stdout.strip().isdigit() and int(ver.stdout.strip()) >= 4:
+            r = sp.run([candidate, "-n", str(SCRIPT)], capture_output=True, text=True)
+            assert r.returncode == 0, f"{candidate} rejects the script: {r.stderr}"
+            return
+    pytest.skip("no bash >= 4 available to cross-check")

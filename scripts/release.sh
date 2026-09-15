@@ -57,16 +57,22 @@ die()   { printf "\n%serror:%s %s\n" "$RED" "$RST" "$1" >&2; exit 1; }
 # Every entry must carry something runnable. "the changelog is not dated" tells you what
 # to think about; the sed line tells you what to type, and that is the difference
 # between a diagnostic and an instruction.
-NEED_WHAT=(); NEED_FIX=()
+# NEED_COUNT is kept by hand rather than read from the array length. `${#arr[@]}` on an
+# empty array is an unbound-variable error under `set -u` on bash 3.2 (macOS), and the
+# obvious guard against that, `${#arr[@]-0}`, is a "bad substitution" on bash 5 (Linux,
+# and therefore CI) because ${#...} does not take a default. A plain integer is correct
+# on both, and this cost a CI round trip to learn.
+NEED_WHAT=(); NEED_FIX=(); NEED_COUNT=0
 need() {
   NEED_WHAT+=("$1"); shift
+  NEED_COUNT=$((NEED_COUNT + 1))
   local fix=""
   for line in "$@"; do fix+="${fix:+$'\n'}$line"; done
   NEED_FIX+=("$fix")
 }
 report_needs() {
-  [ "${#NEED_WHAT[@]-0}" -eq 0 ] && return 0
-  local n="${#NEED_WHAT[@]}" noun="things"
+  [ "$NEED_COUNT" -eq 0 ] && return 0
+  local n="$NEED_COUNT" noun="things"
   [ "$n" -eq 1 ] && noun="thing"
   printf "\n%snot ready to release — %d %s to do first:%s\n" \
     "$RED$BOLD" "$n" "$noun" "$RST" >&2

@@ -83,6 +83,23 @@ That fixture immediately found a second bug it had been hiding: `VAR=$(cmd)` und
 check could never run — the script died with the raw exit status and printed nothing.
 Both captures now suspend errexit and inspect the status themselves.
 
+### Fixed — a construct bash 3.2 accepts and bash 5 rejects
+`${#arr[@]}` on an empty array is an unbound-variable error under `set -u` on bash 3.2,
+which is what macOS ships. The obvious guard, `${#arr[@]-0}`, is a **bad substitution**
+on bash 5, which is what CI runs — `${#...}` takes no default. The script passed
+`bash -n` locally and then died on the first line of its own reporting helper in CI,
+taking every gate with it. The count is now a plain integer, correct on both.
+
+Guarded two ways: a static check that forbids `${#array[@]}` with a default, and a
+cross-check with any bash ≥ 4 on the machine, since `bash -n` only ever validates the
+bash you happen to have. Verified by running the whole script under `bash:5` in a
+container against a simulated CI checkout — detached HEAD, no branches, dirty tree,
+existing tag, undated changelog — and confirming all three problems report correctly.
+
+(The static check needed fixing too: its first version flagged the comment in the script
+that documents this very pitfall. That is the third time this session a source-text scan
+has matched the text explaining the thing it scans for.)
+
 ### Fixed — generated-file staleness could not be told apart from "cannot check here"
 `bench-corpus/` is fetched data and gitignored, so a fresh clone does not have it and
 `export_demo_baselines.py` silently falls back to `examples/voices` — 4 voices instead of
