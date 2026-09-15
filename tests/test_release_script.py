@@ -416,5 +416,11 @@ def test_publishing_from_a_ci_style_checkout_is_refused_with_the_fix():
         r = sp.run([str(wt / "scripts" / "release.sh"), "--pr"], cwd=wt, env=env,
                    capture_output=True, text=True, timeout=180)
         assert r.returncode != 0
-        assert "HEAD is detached" in r.stderr or "no 'main' branch" in r.stderr
-        assert "git checkout" in r.stderr or "git fetch" in r.stderr
+        # --pr checks for gh BEFORE preflight, and CI runners have gh installed but not
+        # authenticated. Either refusal is correct; both must name a command. Asserting
+        # only the branch message would fail in CI for a reason that is not a bug.
+        if "gh is installed but not authenticated" in r.stderr or "gh (GitHub CLI) not found" in r.stderr:
+            assert "gh auth login" in r.stderr
+        else:
+            assert "HEAD is detached" in r.stderr or "no 'main' branch" in r.stderr
+            assert "git checkout" in r.stderr or "git fetch" in r.stderr
