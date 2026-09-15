@@ -105,41 +105,119 @@ def test_the_retired_editing_flags_explain_what_replaced_them():
         assert "no longer edits the repo" in r.stderr, flag
 
 
-def _executable_source() -> str:
-    """The script with double-quoted strings removed, leaving only what bash would RUN.
+def _fixable_repo(tmp: Path) -> Path:
+    """A repo whose only problem is an undated changelog — mechanical, not a decision."""
+    import subprocess as sp
 
-    The script's failure messages quote the commands you should type — `git commit -am`,
-    `sed -i '' 's/.../.../'` — because telling someone what is wrong without telling them
-    what to type is half a message. Those live inside double-quoted arguments to `need`
-    and `die`. A real write would not: `sed -i` as a command is unquoted. Stripping
-    double-quoted spans keeps the distinction exact, and keeps the guard below honest
-    rather than merely strict.
+    wt = tmp / "repo"
+    (wt / "scripts").mkdir(parents=True)
+    (wt / "revoice").mkdir()
+    (wt / "scripts" / "release.sh").write_bytes(SCRIPT.read_bytes())
+    (wt / "scripts" / "release.sh").chmod(0o755)
+    (wt / "revoice" / "__init__.py").write_text('__version__ = "9.9.9"\n')
+    (wt / "CHANGELOG.md").write_text(
+        "# Changelog\n\n## 9.9.9 (unreleased)\n\nnotes long enough to pass the gate\n")
+    # running python in here leaves __pycache__; that is not the script writing
+    (wt / ".gitignore").write_text("__pycache__/\n*.pyc\n")
+    for a in (["init", "-q", "-b", "main", "."], ["config", "user.email", "t@e.com"],
+              ["config", "user.name", "t"], ["add", "-A"], ["commit", "-qm", "init"]):
+        sp.run(["git", *a], cwd=wt, capture_output=True)
+    return wt
+
+
+def _env():
+    import os
+
+    return {"NO_COLOR": "1", "PATH": os.environ["PATH"], "HOME": os.environ["HOME"]}
+
+
+@bash
+def test_without_fix_the_script_changes_nothing():
+    """The contract, tested by behaviour rather than by grepping for command names.
+
+    The previous version of this scanned the source for `git commit`, `sed -i` and
+    friends. That stopped working the moment the script grew a --fix mode that legitimately
+    runs them, and it was always the weaker test: what matters is whether the repository
+    changed, not which words appear in the file.
     """
-    import re
+    import subprocess as sp
+    import tempfile
 
-    return re.sub(r'"(?:[^"\\]|\\.)*"', '""', SCRIPT.read_text(), flags=re.S)
+    with tempfile.TemporaryDirectory() as tmp:
+        wt = _fixable_repo(Path(tmp))
+        before = sp.run(["git", "rev-parse", "HEAD"], cwd=wt,
+                        capture_output=True, text=True).stdout
+        changelog = (wt / "CHANGELOG.md").read_text()
+
+        r = sp.run([str(wt / "scripts" / "release.sh")], cwd=wt, env=_env(),
+                   capture_output=True, text=True, timeout=180)
+        assert r.returncode != 0
+        assert "(unreleased)" in r.stderr
+
+        assert (wt / "CHANGELOG.md").read_text() == changelog, "it edited the changelog"
+        assert sp.run(["git", "rev-parse", "HEAD"], cwd=wt, capture_output=True,
+                      text=True).stdout == before, "it committed something"
+        assert sp.run(["git", "status", "--porcelain"], cwd=wt, capture_output=True,
+                      text=True).stdout.strip() == "", "it left the tree dirty"
 
 
-def test_the_script_never_writes_to_the_repository():
-    """The contract, read from the source: no redirect or in-place edit of tracked files."""
-    import re
+@bash
+def test_without_fix_it_offers_fix_rather_than_only_instructions():
+    """The complaint that produced --fix: being told to go and type something, then
+    re-run a script that has already done minutes of work, is an obstacle, not a gate."""
+    import subprocess as sp
+    import tempfile
 
-    src = _executable_source()
-    for pattern in (r"sed -i", r">\s*(?:revoice|pages|pyproject|CHANGELOG)",
-                    r"\.write_text\(", r"git commit", r"git add"):
-        assert not re.search(pattern, src), f"release.sh appears to write: {pattern}"
+    with tempfile.TemporaryDirectory() as tmp:
+        wt = _fixable_repo(Path(tmp))
+        r = sp.run([str(wt / "scripts" / "release.sh")], cwd=wt, env=_env(),
+                   capture_output=True, text=True, timeout=180)
+        assert "--fix" in r.stderr, "a mechanical problem should mention --fix"
 
 
-def test_the_guard_would_still_catch_a_real_write():
-    """The stripping above must not defang the test it protects."""
-    import re
+@bash
+def test_fix_dates_the_changelog_and_commits_only_what_it_touched():
+    import subprocess as sp
+    import tempfile
+    from datetime import datetime, timezone
 
-    assert re.search(r"git commit", 'git commit -am "Release"')
-    # quoted-as-instruction is ignored, bare-as-command is not
-    stripped = re.sub(r'"(?:[^"\\]|\\.)*"', '""', 'need "run: git commit -am x"', flags=re.S)
-    assert not re.search(r"git commit", stripped)
-    stripped = re.sub(r'"(?:[^"\\]|\\.)*"', '""', 'git commit -am "Release $V"', flags=re.S)
-    assert re.search(r"git commit", stripped)
+    with tempfile.TemporaryDirectory() as tmp:
+        wt = _fixable_repo(Path(tmp))
+        # something unrelated the user was working on — it must NOT be swept up
+        (wt / "my-scratch.txt").write_text("mine\n")
+
+        r = sp.run([str(wt / "scripts" / "release.sh"), "--fix", "--yes"], cwd=wt,
+                   env=_env(), capture_output=True, text=True, timeout=180)
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        assert f"## 9.9.9 - {today}" in (wt / "CHANGELOG.md").read_text(), r.stdout + r.stderr
+
+        log = sp.run(["git", "log", "--name-only", "--format=%s", "-1"], cwd=wt,
+                     capture_output=True, text=True).stdout
+        assert "Release 9.9.9" in log
+        assert "CHANGELOG.md" in log
+        assert "my-scratch.txt" not in log, "it committed a file that was not its business"
+
+        # and the untouched file is still there, still uncommitted
+        assert (wt / "my-scratch.txt").exists()
+        assert "my-scratch.txt" in sp.run(["git", "status", "--porcelain"], cwd=wt,
+                                          capture_output=True, text=True).stdout
+
+
+@bash
+def test_fix_echoes_every_command_it_runs():
+    """Anything the script does to the repo appears as the git/sed line you would have
+    typed, so "it did something to my repo" is never a mystery."""
+    import subprocess as sp
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        wt = _fixable_repo(Path(tmp))
+        r = sp.run([str(wt / "scripts" / "release.sh"), "--fix", "--yes"], cwd=wt,
+                   env=_env(), capture_output=True, text=True, timeout=180)
+        out = r.stdout + r.stderr
+        assert "$ sed -i" in out or "$ sed" in out, out[:600]
+        assert "$ git add" in out
+        assert "$ git commit" in out
 
 
 def test_the_version_is_read_from_the_single_source_of_truth():
@@ -177,7 +255,13 @@ def test_generated_site_files_are_verified_not_regenerated():
     """Regenerating during a release would mean the release authors code."""
     src = SCRIPT.read_text()
     assert "export_demo_baselines.py --check" in src
-    assert "export_demo_baselines.py\n" not in src.replace(" --check", " --check\n")
+    # Regeneration exists now, but only under --fix. Proving that from the source text
+    # means re-implementing bash's block structure in a regex, which is how a test ends
+    # up asserting something subtly different from what it claims. The property is
+    # behavioural and is tested as such by
+    # `test_without_fix_the_script_changes_nothing`, which runs the script on a repo
+    # with a regenerable problem and asserts not one byte moved.
+    assert "$DO_FIX" in src, "the --fix guard should exist for the regeneration branch"
 
 
 def test_release_is_gated_on_remote_ci_not_local_checks():

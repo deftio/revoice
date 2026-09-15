@@ -16,9 +16,16 @@
 # tested. Read-only means the commit CI validates is byte-for-byte the commit that gets
 # tagged and published.
 #
-#   ./scripts/release.sh            verify, test, build — report readiness, touch nothing
-#   ./scripts/release.sh --pr       push the branch and open a PR into main
-#   ./scripts/release.sh --release  wait for CI green, squash-merge, tag, publish
+#   ./scripts/release.sh             verify, test, build — report readiness, touch nothing
+#   ./scripts/release.sh --fix       ...and do the mechanical repairs it finds
+#   ./scripts/release.sh --pr        push the branch and open a PR into main
+#   ./scripts/release.sh --release   wait for CI green, squash-merge, tag, publish
+#
+# Without --fix nothing in the repository is touched. With it, the script performs the
+# repairs that are work rather than decisions — dating the changelog heading, regenerating
+# derived site data — and commits exactly those files, echoing every command it runs.
+# It never chooses a version number, writes release notes, or commits anything you were
+# editing: those are yours, and it still stops for them.
 #
 # When it refuses, it says what to type. Repo-state problems — an existing tag, a dirty
 # tree, an undated changelog, stale generated files — are collected and reported
@@ -48,6 +55,10 @@ note()  { printf "    %s%s%s\n" "$DIM" "$1" "$RST"; }
 warn()  { printf "    %s!%s %s\n" "$YLW" "$RST" "$1"; }
 die()   { printf "\n%serror:%s %s\n" "$RED" "$RST" "$1" >&2; exit 1; }
 
+# Echo the command, then run it. Anything this script does to git is visible as the
+# git command you would have typed, so "it did something to my repo" is never a mystery.
+run_cmd() { printf "    %s$ %s%s\n" "$DIM" "$*" "$RST"; "$@"; }
+
 # Problems are COLLECTED, not fatal on sight. A release that is three commits and a date
 # away from ready should say so once, with the three commands, rather than making you
 # discover them one failed run at a time.
@@ -63,6 +74,7 @@ die()   { printf "\n%serror:%s %s\n" "$RED" "$RST" "$1" >&2; exit 1; }
 # and therefore CI) because ${#...} does not take a default. A plain integer is correct
 # on both, and this cost a CI round trip to learn.
 NEED_WHAT=(); NEED_FIX=(); NEED_COUNT=0
+REPAIRED=""   # files --fix touched, so only those get committed
 need() {
   NEED_WHAT+=("$1"); shift
   NEED_COUNT=$((NEED_COUNT + 1))
@@ -99,12 +111,14 @@ report_needs() {
 # Expanded as ${ORIGINAL_ARGS[*]-} everywhere: under `set -u`, bash 3.2 —
 # which is still what macOS ships — treats an empty array as unbound.
 ORIGINAL_ARGS=("${@-}")
-DO_PR=0; DO_RELEASE=0; DO_PYPI=0; ASSUME_YES=0
+DO_PR=0; DO_RELEASE=0; DO_PYPI=0; ASSUME_YES=0; DO_FIX=0
 MAIN_BRANCH="main"; CI_TIMEOUT=1800; EXPECT=""
 usage() {
   sed -n '3,25p' "$0" | sed 's/^# \{0,1\}//'
   cat <<'USAGE'
 Options:
+  --fix                do the mechanical repairs (date the changelog, regenerate the
+                       site data) and commit them, instead of printing what to type
   --pr                 push the branch and open a PR into main
   --release            wait for CI, squash-merge, tag, publish a GitHub Release
                        (implies --pr)
@@ -118,6 +132,7 @@ USAGE
 }
 while [ $# -gt 0 ]; do
   case "$1" in
+    --fix) DO_FIX=1 ;;
     --pr) DO_PR=1 ;;
     --release) DO_RELEASE=1; DO_PR=1 ;;
     --pypi) DO_PYPI=1 ;;
@@ -191,11 +206,27 @@ if [ "$DO_PR" -eq 1 ]; then
        Or verify and build without publishing:
          $0"
   fi
-  git rev-parse --verify "$MAIN_BRANCH" >/dev/null 2>&1 \
-    || die "no '$MAIN_BRANCH' branch here, and --pr needs it as the base of the PR.
-       Branches present: $(git branch --format='%(refname:short)' | tr '\n' ' ')
-       Fetch it:         git fetch origin $MAIN_BRANCH:$MAIN_BRANCH
-       Or name another:  $0 --main-branch <name> ${ORIGINAL_ARGS[*]-}"
+  # A missing local branch that exists on origin is not a decision anybody needs to make
+  # — it is one fetch. Telling someone to go and type it, then re-run a script that has
+  # already done several minutes of work, is not a gate, it is an obstacle. Gates are for
+  # things only you can settle: what version this is, what the notes say, whether the
+  # tests pass. Fetching a ref is not one of those, so the script does it and shows the
+  # command it used.
+  if ! git rev-parse --verify "$MAIN_BRANCH" >/dev/null 2>&1; then
+    if git rev-parse --verify "origin/$MAIN_BRANCH" >/dev/null 2>&1; then
+      note "no local '$MAIN_BRANCH'; creating it from origin/$MAIN_BRANCH"
+      run_cmd git branch "$MAIN_BRANCH" "origin/$MAIN_BRANCH"
+    elif git ls-remote --exit-code --heads origin "$MAIN_BRANCH" >/dev/null 2>&1; then
+      note "no local '$MAIN_BRANCH'; fetching it from origin"
+      run_cmd git fetch -q origin "$MAIN_BRANCH:$MAIN_BRANCH"
+    else
+      die "no '$MAIN_BRANCH' branch here or on origin, and --pr needs it as the PR base.
+       Branches here:   $(git branch --format='%(refname:short)' | tr '\n' ' ')
+       Branches remote: $(git ls-remote --heads origin 2>/dev/null | sed 's#.*refs/heads/##' | tr '\n' ' ')
+       Name another:    $0 --main-branch <name> ${ORIGINAL_ARGS[*]-}"
+    fi
+    ok "$MAIN_BRANCH available as the PR base"
+  fi
 fi
 
 # The version is READ, never written. revoice/__init__.py is the single source of truth;
@@ -233,19 +264,6 @@ else
   ok "tag v$VERSION is free"
 fi
 
-# Release ships what is committed. An uncommitted change is a change CI never saw.
-if [ -n "$(git status --porcelain)" ]; then
-  need "the working tree has uncommitted changes (CI can only test what is committed)" \
-       "$(git status --short | sed 's/^/  /')" \
-       "" \
-       "Commit them:" \
-       "  git add -A && git commit -m \"Release $VERSION\"" \
-       "or set them aside:" \
-       "  git stash -u"
-else
-  ok "working tree clean"
-fi
-
 # ---------------------------------------------------------- 2. consistency checks ----
 step "Consistency"
 
@@ -281,10 +299,22 @@ TODAY=$(date -u +%Y-%m-%d)
 case "$CHANGELOG_PROBLEM" in
   ok) ok "CHANGELOG has dated notes for $VERSION" ;;
   undated)
-    need "CHANGELOG.md still marks $VERSION as (unreleased)" \
-         "Date the heading:" \
-         "  $SED_INPLACE 's/^## $VERSION (unreleased)\$/## $VERSION - $TODAY/' CHANGELOG.md" \
-         "  git commit -am \"Release $VERSION\"" ;;
+    # Dating a heading is work, not a decision: the date is today and there is nothing
+    # to choose. Writing the notes IS a decision, which is why the 'empty' case below
+    # still stops.
+    if [ "$DO_FIX" -eq 1 ]; then
+      confirm "Date the CHANGELOG heading '## $VERSION' as $TODAY?"
+      run_cmd $SED_INPLACE "s/^## $VERSION (unreleased)\$/## $VERSION - $TODAY/" CHANGELOG.md
+      REPAIRED="$REPAIRED CHANGELOG.md"
+      ok "CHANGELOG dated $TODAY"
+    else
+      need "CHANGELOG.md still marks $VERSION as (unreleased)" \
+           "Date the heading:" \
+           "  $SED_INPLACE 's/^## $VERSION (unreleased)\$/## $VERSION - $TODAY/' CHANGELOG.md" \
+           "  git commit -am \"Release $VERSION\"" \
+           "" \
+           "or let this script do it:  $0 --fix ${ORIGINAL_ARGS[*]-}"
+    fi ;;
   missing)
     need "CHANGELOG.md has no '## $VERSION' section" \
          "Add one at the top of the file, under '# Changelog':" \
@@ -322,14 +352,51 @@ case "$GEN_RC" in
   0) ok "pages/version.js, population.json, voices.json and engine-constants.js are current" ;;
   2) need "the generated site files cannot be verified in this checkout" \
           "$(printf '%s' "$GEN_OUT" | sed 's/^/  /')" ;;
-  *) need "the site's generated files are stale (the pages would ship the wrong version or weights)" \
-          "Regenerate and commit them:" \
-          "  python scripts/export_demo_baselines.py" \
-          "  git add pages/ && git commit -m \"Regenerate site data for $VERSION\"" ;;
+  *) if [ "$DO_FIX" -eq 1 ]; then
+       confirm "Regenerate the site's generated files from the Python?"
+       run_cmd uv run --quiet python scripts/export_demo_baselines.py
+       REPAIRED="$REPAIRED pages"
+       ok "site data regenerated"
+     else
+       need "the site's generated files are stale (the pages would ship the wrong version or weights)" \
+            "Regenerate and commit them:" \
+            "  python scripts/export_demo_baselines.py" \
+            "  git add pages/ && git commit -m \"Regenerate site data for $VERSION\"" \
+            "" \
+            "or let this script do it:  $0 --fix ${ORIGINAL_ARGS[*]-}"
+     fi ;;
 esac
 
 # Everything above is a repo-state problem with a known fix, so they are reported
 # together. Nothing below this line can be answered by a command you type once.
+# Now, and not before: the repairs above legitimately dirty the tree, so checking first
+# would have reported a problem the script was about to create.
+if [ -n "$(git status --porcelain)" ]; then
+  if [ "$DO_FIX" -eq 1 ] && [ -n "$REPAIRED" ]; then
+    # Commit ONLY what the repairs touched. Whatever else you had open is yours, and a
+    # release script sweeping it into a commit is exactly the surprise nobody wants.
+    step "Commit the repairs"
+    confirm "Commit$REPAIRED as \"Release $VERSION\"?"
+    # shellcheck disable=SC2086
+    run_cmd git add $REPAIRED
+    run_cmd git commit -q -m "Release $VERSION"
+    ok "committed $(git rev-parse --short HEAD)"
+  fi
+  if [ -n "$(git status --porcelain)" ]; then
+    need "the working tree has uncommitted changes (CI can only test what is committed)" \
+         "$(git status --short | sed 's/^/  /')" \
+         "" \
+         "Commit them:" \
+         "  git add -A && git commit -m \"Release $VERSION\"" \
+         "or set them aside:" \
+         "  git stash -u"
+  else
+    ok "working tree clean"
+  fi
+else
+  ok "working tree clean"
+fi
+
 report_needs
 
 # ------------------------------------------------------ 3. environment (CI parity) ----

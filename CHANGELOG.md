@@ -138,6 +138,31 @@ Also: the undated-changelog message suggested `sed -i ''`, which is correct on B
 broken on GNU. Suggesting a command that fails is worse than suggesting none, so the
 script detects which `sed` is installed and emits that one.
 
+### Changed — `release.sh` does the mechanical work instead of assigning it
+The script refused `--release` with *"no 'main' branch here … Fetch it: `git fetch origin
+main:main`"* — telling you to type a command it could have run, after several minutes of
+building and testing, and then asking you to start again. That is not a gate, it is an
+obstacle, and it is the opposite of walking someone through a release.
+
+The distinction the script now draws is **decision vs work**:
+
+- **Decisions stop it.** What version this is. What the release notes say. Whether the
+  tests pass. Whether to publish. Nobody else can settle those.
+- **Work it does**, echoing each command as `$ git branch main origin/main` so nothing
+  it touches is a mystery. A missing local branch that exists on origin is one fetch.
+
+`--fix` extends that to the two repairs that were previously homework: dating the
+CHANGELOG heading (the date is today; there is nothing to choose) and regenerating the
+derived site data. It commits **only the files it touched** — anything else you had open
+stays yours, and is reported rather than swept into the commit. Writing the notes is
+still a decision, so an empty section still stops the script.
+
+Default behaviour is unchanged: without `--fix` nothing in the repository is written.
+That contract used to be tested by grepping the source for `git commit` and `sed -i`,
+which stopped meaning anything once a `--fix` mode legitimately ran them. It is now
+tested by running the script against a repo with a repairable problem and asserting not
+one byte moved — which is what the contract always actually said.
+
 ### Changed — `release.sh` now tells you what to type
 Every gate that can refuse a release hands back the command that fixes it, and the
 repo-state gates are collected so three problems take one run instead of three:
