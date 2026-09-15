@@ -51,7 +51,11 @@ def test_refuses_a_dirty_working_tree():
     try:
         r = run()
         assert r.returncode != 0
-        assert "working tree is not clean" in r.stderr
+        assert "uncommitted changes" in r.stderr
+        # and it must say what to type, not merely what is wrong
+        assert "git add -A && git commit" in r.stderr
+        assert "git stash -u" in r.stderr
+        assert "release-dirty-probe.tmp" in r.stderr, "it should list the offending files"
     finally:
         scratch.unlink()
 
@@ -82,7 +86,12 @@ def test_refuses_to_reuse_an_existing_tag():
     try:
         r = run()
         assert r.returncode != 0
-        assert "already exists" in r.stderr
+        assert "already tagged" in r.stderr
+        # the next version is computed for you, not left as an exercise
+        major, minor, patch = revoice.__version__.split(".")
+        nxt = f"{major}.{minor}.{int(patch) + 1}"
+        assert nxt in r.stderr, f"should suggest {nxt}"
+        assert "revoice/__init__.py" in r.stderr and "CHANGELOG.md" in r.stderr
     finally:
         if not existed:
             subprocess.run(["git", "tag", "-d", tag], cwd=ROOT, capture_output=True)
@@ -96,14 +105,41 @@ def test_the_retired_editing_flags_explain_what_replaced_them():
         assert "no longer edits the repo" in r.stderr, flag
 
 
+def _executable_source() -> str:
+    """The script with double-quoted strings removed, leaving only what bash would RUN.
+
+    The script's failure messages quote the commands you should type — `git commit -am`,
+    `sed -i '' 's/.../.../'` — because telling someone what is wrong without telling them
+    what to type is half a message. Those live inside double-quoted arguments to `need`
+    and `die`. A real write would not: `sed -i` as a command is unquoted. Stripping
+    double-quoted spans keeps the distinction exact, and keeps the guard below honest
+    rather than merely strict.
+    """
+    import re
+
+    return re.sub(r'"(?:[^"\\]|\\.)*"', '""', SCRIPT.read_text(), flags=re.S)
+
+
 def test_the_script_never_writes_to_the_repository():
     """The contract, read from the source: no redirect or in-place edit of tracked files."""
     import re
 
-    src = SCRIPT.read_text()
+    src = _executable_source()
     for pattern in (r"sed -i", r">\s*(?:revoice|pages|pyproject|CHANGELOG)",
                     r"\.write_text\(", r"git commit", r"git add"):
         assert not re.search(pattern, src), f"release.sh appears to write: {pattern}"
+
+
+def test_the_guard_would_still_catch_a_real_write():
+    """The stripping above must not defang the test it protects."""
+    import re
+
+    assert re.search(r"git commit", 'git commit -am "Release"')
+    # quoted-as-instruction is ignored, bare-as-command is not
+    stripped = re.sub(r'"(?:[^"\\]|\\.)*"', '""', 'need "run: git commit -am x"', flags=re.S)
+    assert not re.search(r"git commit", stripped)
+    stripped = re.sub(r'"(?:[^"\\]|\\.)*"', '""', 'git commit -am "Release $V"', flags=re.S)
+    assert re.search(r"git commit", stripped)
 
 
 def test_the_version_is_read_from_the_single_source_of_truth():
@@ -189,3 +225,110 @@ def test_the_release_builds_both_distribution_targets():
     assert "uv build" in src
     assert "tar.gz" in src and ".whl" in src, "must verify BOTH sdist and wheel exist"
     assert "uv pip install" in src, "a built wheel that cannot install is not a release"
+
+
+# ---------------------------------------------------------------------------------
+# Actionability.
+#
+# A gate that fails should hand back the command, not just the diagnosis — and if three
+# gates fail it should say so once rather than making you find them one run at a time.
+# These are the tests for that, because "the error message is helpful" decays silently.
+
+@bash
+def test_every_problem_is_reported_in_one_pass():
+    """Three simultaneous problems, one run, three numbered items."""
+    import re
+
+    import revoice
+
+    changelog = ROOT / "CHANGELOG.md"
+    original = changelog.read_text()
+    scratch = ROOT / "release-multi-probe.tmp"
+    tag = f"v{revoice.__version__}"
+    tag_existed = subprocess.run(["git", "rev-parse", "-q", "--verify", f"refs/tags/{tag}"],
+                                 cwd=ROOT, capture_output=True).returncode == 0
+    try:
+        changelog.write_text(re.sub(rf"^## {re.escape(revoice.__version__)} .*$",
+                                    f"## {revoice.__version__} (unreleased)",
+                                    original, count=1, flags=re.M))
+        scratch.write_text("uncommitted\n")
+        if not tag_existed:
+            subprocess.run(["git", "tag", tag], cwd=ROOT, capture_output=True)
+
+        r = run()
+        assert r.returncode != 0
+        assert "not ready to release" in r.stderr
+        assert "3 things to do first" in r.stderr, r.stderr
+        for n in ("1.", "2.", "3."):
+            assert f"\n{n} " in r.stderr or r.stderr.startswith(f"{n} "), n
+        # ordering matters: fixing the tag changes the version the others refer to
+        assert "do them in order" in r.stderr
+        assert "then re-run:" in r.stderr
+    finally:
+        changelog.write_text(original)
+        scratch.unlink(missing_ok=True)
+        if not tag_existed:
+            subprocess.run(["git", "tag", "-d", tag], cwd=ROOT, capture_output=True)
+
+
+@bash
+def test_an_undated_changelog_hands_back_the_exact_edit():
+    import re
+    from datetime import datetime, timezone
+
+    import revoice
+
+    changelog = ROOT / "CHANGELOG.md"
+    original = changelog.read_text()
+    v = revoice.__version__
+    try:
+        changelog.write_text(re.sub(rf"^## {re.escape(v)} .*$", f"## {v} (unreleased)",
+                                    original, count=1, flags=re.M))
+        r = run()
+        assert r.returncode != 0
+        assert "(unreleased)" in r.stderr
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        # a runnable line, with today's date already substituted in
+        assert f"## {v} - {today}" in r.stderr
+        assert "sed -i" in r.stderr and "CHANGELOG.md" in r.stderr
+        assert "GNU sed" in r.stderr, "the BSD/GNU difference bites everyone once"
+    finally:
+        changelog.write_text(original)
+
+
+@bash
+def test_no_message_merely_states_the_problem():
+    """Every `need` in the script carries something runnable.
+
+    A message that says what is wrong and not what to type is half a message, and this is
+    the check that keeps the next one from being written that way.
+    """
+    import re
+
+    src = SCRIPT.read_text()
+    calls = re.findall(r'\bneed\s+"(.*?)"\s*\\?\n(.*?)(?=\n\s*(?:else|fi|;;|\bneed\b|$))',
+                       src, re.S)
+    assert calls, "no need() calls found — has the script been restructured?"
+    runnable = ("git ", "uv ", "python ", "sed ", "$EDITOR", "gh ", "brew ", "export ")
+    for what, body in calls:
+        assert any(tok in body for tok in runnable), (
+            f"the message {what!r} tells you what is wrong but not what to type")
+
+
+@bash
+def test_a_failing_gate_names_the_command_that_reproduces_it():
+    """The verify stage runs with --quiet; a failure must say how to see the output."""
+    src = SCRIPT.read_text()
+    assert "Reproduce it:" in src
+    # the suggested commands must NOT be the quiet ones, or you re-run and see nothing
+    for line in src.splitlines():
+        if line.strip().startswith('"uv run') and "Reproduce" not in line:
+            assert "--quiet" not in line, f"reproduce command is silenced: {line.strip()}"
+
+
+@bash
+def test_missing_tools_say_how_to_install_them():
+    src = SCRIPT.read_text()
+    assert "astral.sh/uv/install.sh" in src or "brew install uv" in src
+    assert "gh auth login" in src
+    assert "brew install gh" in src

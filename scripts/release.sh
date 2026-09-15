@@ -20,6 +20,13 @@
 #   ./scripts/release.sh --pr       push the branch and open a PR into main
 #   ./scripts/release.sh --release  wait for CI green, squash-merge, tag, publish
 #
+# When it refuses, it says what to type. Repo-state problems — an existing tag, a dirty
+# tree, an undated changelog, stale generated files — are collected and reported
+# TOGETHER, each with the command that fixes it, because finding three problems in three
+# runs is three times the work of finding them in one. Test and build failures are
+# reported one at a time, since those are not fixed by typing a command, but each names
+# the un-quieted command that reproduces it.
+#
 # The local checks are a fast filter, not the authority. --release blocks on the CI run
 # GitHub performs against the PR and refuses to merge or publish if it is red: a release
 # whose only evidence is "it passed on my laptop" is what this exists to prevent.
@@ -41,7 +48,51 @@ note()  { printf "    %s%s%s\n" "$DIM" "$1" "$RST"; }
 warn()  { printf "    %s!%s %s\n" "$YLW" "$RST" "$1"; }
 die()   { printf "\n%serror:%s %s\n" "$RED" "$RST" "$1" >&2; exit 1; }
 
+# Problems are COLLECTED, not fatal on sight. A release that is three commits and a date
+# away from ready should say so once, with the three commands, rather than making you
+# discover them one failed run at a time.
+#
+#   need "<what is wrong>" "<the command that fixes it>" ["<second line>" ...]
+#
+# Every entry must carry something runnable. "the changelog is not dated" tells you what
+# to think about; the sed line tells you what to type, and that is the difference
+# between a diagnostic and an instruction.
+NEED_WHAT=(); NEED_FIX=()
+need() {
+  NEED_WHAT+=("$1"); shift
+  local fix=""
+  for line in "$@"; do fix+="${fix:+$'\n'}$line"; done
+  NEED_FIX+=("$fix")
+}
+report_needs() {
+  [ "${#NEED_WHAT[@]-0}" -eq 0 ] && return 0
+  local n="${#NEED_WHAT[@]}" noun="things"
+  [ "$n" -eq 1 ] && noun="thing"
+  printf "\n%snot ready to release — %d %s to do first:%s\n" \
+    "$RED$BOLD" "$n" "$noun" "$RST" >&2
+  local i
+  for i in "${!NEED_WHAT[@]}"; do
+    printf "\n%s%d. %s%s\n" "$BOLD" "$((i + 1))" "${NEED_WHAT[$i]}" "$RST" >&2
+    printf "%s\n" "${NEED_FIX[$i]}" | sed 's/^/       /' >&2
+  done
+  # In order: item 1 can change the version that item 2 would commit, so a numbered
+  # list that is also a sequence should say it is one.
+  if [ "$n" -gt 1 ]; then
+    printf "\n%sdo them in order — a later step can depend on an earlier one.%s\n" \
+      "$DIM" "$RST" >&2
+  else
+    printf "\n" >&2
+  fi
+  printf "%sthen re-run:%s %s\n" "$DIM" "$RST" \
+    "$(printf '%s' "$0 ${ORIGINAL_ARGS[*]-}" | sed 's/ *$//')" >&2
+  exit 1
+}
+
 # ---------------------------------------------------------------------- options ----
+# Kept so the "then re-run" line can echo back exactly what was invoked.
+# Expanded as ${ORIGINAL_ARGS[*]-} everywhere: under `set -u`, bash 3.2 —
+# which is still what macOS ships — treats an empty array as unbound.
+ORIGINAL_ARGS=("${@-}")
 DO_PR=0; DO_RELEASE=0; DO_PYPI=0; ASSUME_YES=0
 MAIN_BRANCH="main"; CI_TIMEOUT=1800; EXPECT=""
 usage() {
@@ -86,18 +137,32 @@ confirm() {
 }
 
 PY=$(command -v python3 || true)
-[ -n "$PY" ] || die "python3 not found"
-command -v uv >/dev/null || die "uv not found — needed to build and to make a clean test env"
-command -v node >/dev/null || warn "node not found: the JS/Python parity tests will SKIP, which is how the site and the tool drift apart"
+[ -n "$PY" ] || die "python3 not found.
+       Install it from https://www.python.org/downloads/  or:  brew install python"
+command -v uv >/dev/null || die "uv not found — needed to build and to make a clean test env.
+       Install it:  curl -LsSf https://astral.sh/uv/install.sh | sh
+       or:          brew install uv"
+if command -v node >/dev/null; then
+  ok "node present — the JS/Python parity tests will run"
+else
+  warn "node not found: the JS/Python parity tests will SKIP, which is how the site and"
+  note "  the tool drift apart. Install it:  brew install node"
+fi
 if [ "$DO_PR" -eq 1 ]; then
-  command -v gh >/dev/null || die "gh (GitHub CLI) not found — see https://cli.github.com"
-  gh auth status >/dev/null 2>&1 || die "gh is not authenticated — run: gh auth login"
+  command -v gh >/dev/null || die "gh (GitHub CLI) not found — needed for --pr and --release.
+       Install it:  brew install gh
+       Then:        gh auth login
+       Or verify and build locally without publishing:  $0"
+  gh auth status >/dev/null 2>&1 || die "gh is installed but not authenticated.
+       Run:  gh auth login"
 fi
 
 # ------------------------------------------------------ 1. what are we releasing? ----
 step "Preflight"
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
-git rev-parse --verify "$MAIN_BRANCH" >/dev/null 2>&1 || die "no '$MAIN_BRANCH' branch here"
+git rev-parse --verify "$MAIN_BRANCH" >/dev/null 2>&1 || die "no '$MAIN_BRANCH' branch here.
+       Branches present: $(git branch --format='%(refname:short)' | tr '\n' ' ')
+       Choose one with:  $0 --main-branch <name>"
 
 # The version is READ, never written. revoice/__init__.py is the single source of truth;
 # pyproject.toml derives from it and the site is generated from it.
@@ -113,69 +178,158 @@ PYEOF
 note "version   $VERSION   (from revoice/__init__.py)"
 note "branch    $BRANCH -> $MAIN_BRANCH"
 [ -z "$EXPECT" ] || [ "$EXPECT" = "$VERSION" ] \
-  || die "committed version is $VERSION, but --expect said $EXPECT"
+  || die "the committed version is $VERSION, but --expect said $EXPECT.
+       Either drop --expect, or set the version you meant:
+         \$EDITOR revoice/__init__.py     # __version__ = \"$EXPECT\"
+         git commit -am \"Release $EXPECT\""
 
 # Tag first: it is the cheapest check and its message is the more useful one. A tag that
 # already exists means the release is not ready at all, which is worth knowing before
 # being told to tidy the working tree.
-git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null \
-  && die "tag v$VERSION already exists — bump revoice/__init__.py for a new release"
-ok "tag v$VERSION is free"
+if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+  NEXT=$(echo "$VERSION" | awk -F. -v OFS=. '{ $NF = $NF + 1; print }')
+  TODAY=$(date -u +%Y-%m-%d)
+  need "v$VERSION is already tagged — this version has shipped" \
+       "Bump to the next version and write its notes:" \
+       "  \$EDITOR revoice/__init__.py      # __version__ = \"$NEXT\"" \
+       "  \$EDITOR CHANGELOG.md             # add a '## $NEXT - $TODAY' section" \
+       "  python scripts/export_demo_baselines.py" \
+       "  git commit -am \"Release $NEXT\""
+else
+  ok "tag v$VERSION is free"
+fi
 
 # Release ships what is committed. An uncommitted change is a change CI never saw.
 if [ -n "$(git status --porcelain)" ]; then
-  git status --short | sed 's/^/      /'
-  die "working tree is not clean.
-       This script ships what is committed — commit or stash first, so the artefacts
-       are built from exactly the tree CI will test."
+  need "the working tree has uncommitted changes (CI can only test what is committed)" \
+       "$(git status --short | sed 's/^/  /')" \
+       "" \
+       "Commit them:" \
+       "  git add -A && git commit -m \"Release $VERSION\"" \
+       "or set them aside:" \
+       "  git stash -u"
+else
+  ok "working tree clean"
 fi
-ok "working tree clean"
 
 # ---------------------------------------------------------- 2. consistency checks ----
 step "Consistency"
-"$PY" - "$VERSION" <<'PYEOF' || exit 1
+
+# The CHANGELOG check reports WHICH of the three ways it can be wrong, and hands back the
+# exact line to change. "write the notes before releasing" is a diagnosis; a sed command
+# with today's date already in it is an instruction.
+CHANGELOG_PROBLEM=$("$PY" - "$VERSION" <<'CHECK_EOF'
 import pathlib, re, sys
 v = sys.argv[1]
 text = pathlib.Path("CHANGELOG.md").read_text()
 m = re.search(rf'^## {re.escape(v)}\b(.*)$', text, re.M)
 if not m:
-    print(f"    CHANGELOG.md has no '## {v}' section — write the notes before releasing")
-    raise SystemExit(1)
+    print("missing")
+    raise SystemExit(0)
 if "(unreleased)" in m.group(1):
-    print(f"    '## {v}' is still marked (unreleased) — date it before shipping")
-    raise SystemExit(1)
+    print("undated")
+    raise SystemExit(0)
 body = text[m.end():]
 nxt = re.search(r'^## ', body, re.M)
 entry = (body[:nxt.start()] if nxt else body).strip()
-if len(entry) < 40:
-    print(f"    the '## {v}' section is empty — a release with no notes helps nobody")
-    raise SystemExit(1)
-PYEOF
-ok "CHANGELOG has dated notes for $VERSION"
+print("empty" if len(entry) < 40 else "ok")
+CHECK_EOF
+)
+TODAY=$(date -u +%Y-%m-%d)
+case "$CHANGELOG_PROBLEM" in
+  ok) ok "CHANGELOG has dated notes for $VERSION" ;;
+  undated)
+    need "CHANGELOG.md still marks $VERSION as (unreleased)" \
+         "Date the heading:" \
+         "  sed -i '' 's/^## $VERSION (unreleased)\$/## $VERSION - $TODAY/' CHANGELOG.md" \
+         "  git commit -am \"Release $VERSION\"" \
+         "" \
+         "(GNU sed: drop the '' after -i)" ;;
+  missing)
+    need "CHANGELOG.md has no '## $VERSION' section" \
+         "Add one at the top of the file, under '# Changelog':" \
+         "" \
+         "  ## $VERSION - $TODAY" \
+         "" \
+         "  ### Added" \
+         "  - what changed, and why someone should care" \
+         "" \
+         "  git commit -am \"Release $VERSION\"" ;;
+  empty)
+    need "the '## $VERSION' section in CHANGELOG.md has no notes in it" \
+         "A release with no notes helps nobody. Write what changed:" \
+         "  \$EDITOR CHANGELOG.md" \
+         "  git commit -am \"Release $VERSION\"" ;;
+esac
 
-DERIVED=$(uv run --quiet python -c 'import revoice; print(revoice.__version__)')
-[ "$DERIVED" = "$VERSION" ] || die "the package reports $DERIVED, the source says $VERSION"
-ok "runtime and packaging agree on $VERSION"
+DERIVED=$(uv run --quiet python -c 'import revoice; print(revoice.__version__)' 2>/dev/null || echo "?")
+if [ "$DERIVED" = "$VERSION" ]; then
+  ok "runtime and packaging agree on $VERSION"
+else
+  need "the installed package reports $DERIVED but the source says $VERSION" \
+       "The environment is stale. Re-sync it:" \
+       "  uv sync --all-extras"
+fi
 
-uv run --quiet python scripts/export_demo_baselines.py --check \
-  || die "the site's generated files are stale — regenerate and commit them"
-ok "pages/version.js, population.json and voices.json are current"
+if uv run --quiet python scripts/export_demo_baselines.py --check >/dev/null 2>&1; then
+  ok "pages/version.js, population.json, voices.json and engine-constants.js are current"
+else
+  need "the site's generated files are stale (the pages would ship the wrong version or weights)" \
+       "Regenerate and commit them:" \
+       "  python scripts/export_demo_baselines.py" \
+       "  git add pages/ && git commit -m \"Regenerate site data for $VERSION\""
+fi
+
+# Everything above is a repo-state problem with a known fix, so they are reported
+# together. Nothing below this line can be answered by a command you type once.
+report_needs
 
 # ------------------------------------------------------------------- 3. test (CI) ----
 step "Test (the same gates CI runs)"
-uv run --quiet python scripts/check_no_user_data.py >/dev/null && ok "privacy gate"
-uv run --quiet ruff check revoice/ tests/ scripts/ >/dev/null && ok "ruff, zero warnings"
-uv run --quiet pytest tests/ -q --cov=revoice --cov-fail-under=100 >/dev/null \
-  && ok "tests pass at 100% coverage"
-uv run --quiet revoice bench examples/voices --lengths 50,200 -n 10 --no-content-control >/dev/null \
-  && ok "voice-metric bench runs clean"
+
+# These fail one at a time on purpose — unlike the repo-state checks above, a broken test
+# is not something you fix by typing a command, and running the rest of the suite after
+# the first failure just buries the output you need. What each DOES give you is the exact
+# command to reproduce it, without --quiet, so the next thing you run shows you the error.
+gate() {
+  local label="$1" fix="$2"; shift 2
+  if "$@" >/dev/null 2>&1; then
+    ok "$label"
+  else
+    printf "\n%sfailed:%s %s\n\n" "$RED$BOLD" "$RST" "$label" >&2
+    printf "    Reproduce it:\n       %s\n\n" "$fix" >&2
+    printf "    Then commit the fix and re-run:  %s\n" \
+      "$(printf '%s' "$0 ${ORIGINAL_ARGS[*]-}" | sed 's/ *$//')" >&2
+    exit 1
+  fi
+}
+
+gate "privacy gate" \
+     "uv run python scripts/check_no_user_data.py" \
+     uv run --quiet python scripts/check_no_user_data.py
+gate "ruff, zero warnings" \
+     "uv run ruff check revoice/ tests/ scripts/    (add --fix for the automatic ones)" \
+     uv run --quiet ruff check revoice/ tests/ scripts/
+gate "tests pass at 100% coverage" \
+     "uv run pytest tests/ -q --cov=revoice --cov-report=term-missing" \
+     uv run --quiet pytest tests/ -q --cov=revoice --cov-fail-under=100
+gate "voice-metric bench runs clean" \
+     "uv run revoice bench examples/voices --lengths 50,200 -n 10 --no-content-control" \
+     uv run --quiet revoice bench examples/voices --lengths 50,200 -n 10 --no-content-control
 
 # -------------------------------------------------------------------- 4. build all ----
 step "Build"
 rm -rf dist
-uv build >/dev/null 2>&1 || die "build failed (run 'uv build' to see why)"
-[ -f dist/revoice-"$VERSION".tar.gz ] || die "sdist for $VERSION not produced"
-ls dist/revoice-"$VERSION"-*.whl >/dev/null 2>&1 || die "wheel for $VERSION not produced"
+uv build >/dev/null 2>&1 || die "the build failed.
+       See why:  uv build
+       Then commit the fix and re-run:  $0 ${ORIGINAL_ARGS[*]-}"
+[ -f dist/revoice-"$VERSION".tar.gz ] || die "no sdist for $VERSION was produced.
+       Built instead: $(ls dist 2>/dev/null | tr '\n' ' ')
+       That usually means pyproject.toml and revoice/__init__.py disagree. Check:
+         uv run python -c 'import revoice; print(revoice.__version__)'"
+ls dist/revoice-"$VERSION"-*.whl >/dev/null 2>&1 || die "no wheel for $VERSION was produced.
+       Built instead: $(ls dist 2>/dev/null | tr '\n' ' ')
+       See why:  uv build"
 ls dist | sed 's/^/      /'
 
 # Install the wheel somewhere clean: the only check that catches a package which builds
@@ -185,8 +339,15 @@ trap 'rm -rf "$VERIFY_ENV"' EXIT
 uv venv --quiet "$VERIFY_ENV/venv" >/dev/null 2>&1
 uv pip install --quiet --python "$VERIFY_ENV/venv/bin/python" dist/revoice-"$VERSION"-*.whl
 INSTALLED=$("$VERIFY_ENV/venv/bin/revoice" --version | awk '{print $NF}')
-[ "$INSTALLED" = "$VERSION" ] || die "installed wheel reports '$INSTALLED', expected '$VERSION'"
-"$VERIFY_ENV/venv/bin/python" - <<'PYEOF' || die "the built wheel is missing package data"
+[ "$INSTALLED" = "$VERSION" ] || die "the built wheel reports version '$INSTALLED' but the source says '$VERSION'.
+       The packaging metadata is out of step with revoice/__init__.py. Check:
+         grep -n 'version' pyproject.toml
+         uv run python -c 'import revoice; print(revoice.__version__)'"
+"$VERIFY_ENV/venv/bin/python" - <<'PYEOF' || die "the built wheel is missing package data — it would install and then fail on use.
+       Check the package-data globs:
+         grep -n -A5 'package-data\\|force-include\\|artifacts' pyproject.toml
+       Rebuild and inspect what actually went in:
+         uv build && python -m zipfile -l dist/revoice-$VERSION-*.whl"
 import importlib.resources as r
 for name in ("rubric/README.md", "voicemetric/README.md", "static/index.html"):
     pkg, _, rest = name.partition("/")
@@ -255,7 +416,12 @@ note "the local gates above were a fast filter; this is the run that decides"
 note "watching $PR_URL (timeout ${CI_TIMEOUT}s)"
 if ! timeout "$CI_TIMEOUT" gh pr checks "$RELEASE_BRANCH" --watch --fail-fast; then
   die "CI is not green — the PR stays open and nothing was merged or published.
-       Fix it, commit to '$RELEASE_BRANCH', then re-run with --release."
+       Look at what failed:
+         gh pr checks $RELEASE_BRANCH
+         gh run view --log-failed
+       Fix it, then:
+         git commit -am \"...\" && git push
+         $0 --release"
 fi
 ok "CI passed"
 
@@ -284,9 +450,16 @@ note "the attached wheel and sdist are the ones built and test-installed above"
 if [ "$DO_PYPI" -eq 1 ]; then
   step "PyPI"
   [ -n "${UV_PUBLISH_TOKEN:-}" ] \
-    || die "UV_PUBLISH_TOKEN is not set — https://pypi.org/manage/account/token/"
+    || die "--pypi was given but UV_PUBLISH_TOKEN is not set.
+       Create a token at https://pypi.org/manage/account/token/ then:
+         export UV_PUBLISH_TOKEN=pypi-...
+       Or drop --pypi to publish to GitHub only (the default)."
   confirm "Upload revoice $VERSION to PyPI? A version cannot be re-uploaded or replaced."
-  uv publish dist/revoice-"$VERSION"* >/dev/null || die "upload failed"
+  uv publish dist/revoice-"$VERSION"* >/dev/null || die "the PyPI upload failed.
+       The GitHub release was already published, so do not re-run the whole script.
+       Retry just the upload:
+         uv publish dist/revoice-$VERSION*
+       Note: the name 'revoice' is already taken on PyPI by an unrelated package."
   ok "published https://pypi.org/project/revoice/$VERSION/"
 else
   note "PyPI: skipped (pass --pypi with UV_PUBLISH_TOKEN set)"

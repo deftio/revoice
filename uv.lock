@@ -676,7 +676,6 @@ wheels = [
 
 [[package]]
 name = "revoice"
-version = "0.1.8"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },

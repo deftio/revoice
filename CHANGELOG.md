@@ -61,6 +61,56 @@ because it measures subject matter — is better calibrated about its own reliab
 the voice composite is, at every length. That argues for calibration work (§6), not for
 putting it back in the score.
 
+### Changed — `release.sh` now tells you what to type
+Every gate that can refuse a release hands back the command that fixes it, and the
+repo-state gates are collected so three problems take one run instead of three:
+
+```
+not ready to release — 3 thing(s) to do first:
+
+1. v0.1.10 is already tagged — this version has shipped
+       Bump to the next version and write its notes:
+         $EDITOR revoice/__init__.py      # __version__ = "0.1.11"
+         $EDITOR CHANGELOG.md             # add a '## 0.1.11 - 2026-09-15' section
+         python scripts/export_demo_baselines.py
+         git commit -am "Release 0.1.11"
+
+2. the working tree has uncommitted changes (CI can only test what is committed)
+          M CHANGELOG.md
+         ?? scratch.tmp
+       Commit them:
+         git add -A && git commit -m "Release 0.1.10"
+       or set them aside:
+         git stash -u
+
+3. CHANGELOG.md still marks 0.1.10 as (unreleased)
+       Date the heading:
+         sed -i '' 's/^## 0.1.10 (unreleased)$/## 0.1.10 - 2026-09-15/' CHANGELOG.md
+         git commit -am "Release 0.1.10"
+
+do them in order — a later step can depend on an earlier one.
+then re-run: ./scripts/release.sh
+```
+
+The next version number is computed, today's date is substituted in, and the BSD/GNU
+`sed -i` difference is noted, because that one bites everybody once. Missing tools give
+their install line; `gh` unauthenticated gives `gh auth login`.
+
+Test and build failures stay one at a time — those are not fixed by typing a command,
+and running the rest of the suite after the first failure buries the output you need.
+What each gives you is the **un-quieted** command that reproduces it, since the script
+runs them with `--quiet` and re-running the same silenced command shows nothing.
+
+Three tests keep this honest: one asserts three simultaneous problems produce three
+numbered items in one pass, one asserts the undated-changelog message contains a
+runnable `sed` line with today's date already in it, and one parses every `need` call in
+the script and fails if any message states a problem without offering something to type.
+
+One knock-on: the read-only guard scanned the source for `git commit`, `sed -i` and
+friends, and the new messages legitimately contain those as *text to show the user*. It
+now strips double-quoted spans before scanning — an instruction is quoted, a real write
+would not be — with a companion test proving the strip has not defanged it.
+
 ### Added — `pages/report.html`, and a Markdown export
 The browser twin of `revoice space --report`. compare.html answers *did this text drift
 from that one*; this answers *of these several samples, which sit closest to this voice,
