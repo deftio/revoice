@@ -484,7 +484,7 @@ else
   note "PyPI: skipped (pass --pypi with UV_PUBLISH_TOKEN set)"
 fi
 
-# --------------------------------------------------------------- 10. publish: Pages ----
+# --------------------------------------------------------------- 11. publish: Pages ----
 step "Pages"
 note "GitHub Pages rebuilds from pages/ on the merge commit — no action needed"
 note "the site reports $VERSION from the version.js committed with this release"
