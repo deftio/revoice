@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.10 (unreleased)
+## 0.1.10 - 2026-09-14
 
 **Better metrics, under a hard constraint: everything here runs in a browser.**
 
