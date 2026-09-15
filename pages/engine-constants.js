@@ -5,6 +5,12 @@
    what actually drifts. The page scored with ngram weighted 0.6 for months
    while the fitted value was 0.181, for exactly that reason. */
 var VM_CONST = {
+  "VERSIONS": {
+    "revoice": "0.1.10",
+    "voicemetric": "0.5.0",
+    "voicemetric_signature": "bfd1b0992fc8",
+    "rubric": "1.0.0"
+  },
   "FUNCTION_WORDS": [
     "the",
     "of",

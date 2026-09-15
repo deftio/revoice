@@ -87,11 +87,13 @@ def test_refuses_to_reuse_an_existing_tag():
         r = run()
         assert r.returncode != 0
         assert "already tagged" in r.stderr
-        # the next version is computed for you, not left as an exercise
-        major, minor, patch = revoice.__version__.split(".")
-        nxt = f"{major}.{minor}.{int(patch) + 1}"
-        assert nxt in r.stderr, f"should suggest {nxt}"
+        # It points at where the version lives; it does NOT propose a number. Whether
+        # the next release is a patch, a minor or a major is a judgement about what
+        # changed, and the script has no standing to make it.
         assert "revoice/__init__.py" in r.stderr and "CHANGELOG.md" in r.stderr
+        major, minor, patch = revoice.__version__.split(".")
+        assert f"{major}.{minor}.{int(patch) + 1}" not in r.stderr, \
+            "the script should not be choosing the next version"
     finally:
         if not existed:
             subprocess.run(["git", "tag", "-d", tag], cwd=ROOT, capture_output=True)
@@ -114,7 +116,10 @@ def _fixable_repo(tmp: Path) -> Path:
     (wt / "revoice").mkdir()
     (wt / "scripts" / "release.sh").write_bytes(SCRIPT.read_bytes())
     (wt / "scripts" / "release.sh").chmod(0o755)
-    (wt / "revoice" / "__init__.py").write_text('__version__ = "9.9.9"\n')
+    # version() as well as __version__: the script asks the package, it does not parse
+    # the file, so a fixture without the accessor is not a fixture of this project.
+    (wt / "revoice" / "__init__.py").write_text(
+        '__version__ = "9.9.9"\n\n\ndef version():\n    return __version__\n')
     (wt / "CHANGELOG.md").write_text(
         "# Changelog\n\n## 9.9.9 (unreleased)\n\nnotes long enough to pass the gate\n")
     # running python in here leaves __pycache__; that is not the script writing
@@ -448,7 +453,10 @@ def _ci_like_checkout(tmp: Path) -> Path:
         (wt / rel).mkdir(parents=True, exist_ok=True)
     (wt / "scripts" / "release.sh").write_bytes(SCRIPT.read_bytes())
     (wt / "scripts" / "release.sh").chmod(0o755)
-    (wt / "revoice" / "__init__.py").write_text('__version__ = "9.9.9"\n')
+    # version() as well as __version__: the script asks the package, it does not parse
+    # the file, so a fixture without the accessor is not a fixture of this project.
+    (wt / "revoice" / "__init__.py").write_text(
+        '__version__ = "9.9.9"\n\n\ndef version():\n    return __version__\n')
     (wt / "CHANGELOG.md").write_text("# Changelog\n\n## 9.9.9 (unreleased)\n\nnotes\n")
     run_git("add", "-A")
     run_git("commit", "-qm", "init")
@@ -550,3 +558,43 @@ def test_the_script_parses_under_a_modern_bash_too():
             assert r.returncode == 0, f"{candidate} rejects the script: {r.stderr}"
             return
     pytest.skip("no bash >= 4 available to cross-check")
+
+
+@bash
+def test_the_version_comes_from_the_package_not_from_a_parse():
+    """The single source of truth is the code, and the script asks it.
+
+    It used to carry its own regex over revoice/__init__.py — a second implementation of
+    `revoice.version()`, and so a second source of truth that could drift. It could not
+    even detect that it had: the old "runtime and packaging agree" check existed purely
+    to compare the script's parse against the package's, which is a check you only need
+    once you have made the mistake of parsing.
+    """
+    import re
+
+    src = SCRIPT.read_text()
+    assert "revoice.version()" in src, "the script should ask the package for its version"
+
+    # No regex over the version specifically. The script legitimately parses OTHER
+    # things — the CHANGELOG heading, for one — so forbidding `re.search` outright
+    # would fail on code that has nothing to do with versions.
+    body = re.sub(r'^\s*#.*$', '', src, flags=re.M)
+    for pattern in (r"re\.search\(r?['\"][^'\"]*__version__",
+                    r"grep [^|\n]*__version__", r"awk [^|\n]*__version__",
+                    r"sed [^|\n]*__version__"):
+        assert not re.search(pattern, body), (
+            f"the script parses the version out of source text ({pattern}); "
+            "ask revoice.version() instead")
+
+
+@bash
+def test_the_script_does_not_compute_a_version_number():
+    """Bumping is a judgement about what changed. The script names the file and stops."""
+    import re
+
+    body = re.sub(r'^\s*#.*$', '', SCRIPT.read_text(), flags=re.M)
+    # arithmetic on version components, however it is spelled
+    for pattern in (r"\$NF\s*\+\s*1", r"patch\s*\+\s*1", r"\+\s*1\s*;\s*print"):
+        assert not re.search(pattern, body), (
+            f"the script computes a version number ({pattern}); that decision is the "
+            "author's, recorded in revoice/__init__.py")

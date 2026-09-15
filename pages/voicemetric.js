@@ -55,6 +55,30 @@
  * not a rounding difference, so it is not allowed to be one.
  */
 
+/* ---- runtime version support ------------------------------------------------
+   Same shape as the rest of the family: a string to print, a tuple to compare, and an
+   everything-at-once accessor. `vmVersions()` is the one worth reaching for — this file
+   is a PORT of the Python engine, so "which engine produced this number" is exactly the
+   question a surprising result turns on, and the signature answers whether two results
+   are comparable at all even when the version has not moved.
+
+   All of it is generated from revoice.versions() into engine-constants.js, so the page
+   cannot claim a version the package does not have. */
+
+var VM_VERSION = VM_CONST.VERSIONS.voicemetric;
+var VM_VERSION_INFO = VM_VERSION.split('.').map(Number);
+
+function vmVersion() { return VM_VERSION; }
+function vmVersionInfo() { return VM_VERSION_INFO.slice(); }
+function vmSignature() { return VM_CONST.VERSIONS.voicemetric_signature; }
+
+/* Every component, one call — what a bug report should carry. */
+function vmVersions() {
+  var out = {};
+  for (var k in VM_CONST.VERSIONS) out[k] = VM_CONST.VERSIONS[k];
+  return out;
+}
+
 /* ---- small helpers, mirroring the Python exactly ---- */
 
 function vmRound(x, nd) {

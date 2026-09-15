@@ -174,6 +174,7 @@ def export_constants(quiet: bool = False) -> None:
     A constant that is generated cannot be edited into disagreement. An algorithm that
     is tested cannot drift without a failure. Nothing else is load-bearing.
     """
+    import revoice
     from revoice.voicemetric.baseline import (
         COMPONENTS,
         PUNCT_RATIO_SCALARS,
@@ -207,6 +208,12 @@ def export_constants(quiet: bool = False) -> None:
     from revoice.voicemetric.transfer import HEDGES, MEANING_FLOOR, NEGATIONS
 
     payload = {
+        # The browser engine reports its own version, like every other package in this
+        # family (bw.version / bw.versionInfo, FR_MATH_VERSION). It matters more here
+        # than usual: this JS is a PORT, and "which engine produced this number" is the
+        # question a mismatched result turns on. Generated, so it cannot drift from the
+        # Python it mirrors.
+        "VERSIONS": revoice.versions(),
         "FUNCTION_WORDS": list(FUNCTION_WORDS),
         # sets are emitted sorted: Python set iteration order is not stable across
         # runs, and an unstable generated file would churn the diff every regeneration

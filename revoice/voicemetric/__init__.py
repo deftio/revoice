@@ -105,6 +105,22 @@ from revoice.voicemetric.verify import (
 __version__ = "0.5.0"
 
 
+# --- runtime version support ---------------------------------------------------
+# Every package in this family reports its own version at runtime, in a form you can
+# print and a form you can compare: bitwrench has `bw.version` / `bw.versionInfo` /
+# `bw.getVersion()`, fr_math has FR_MATH_VERSION alongside a packed FR_MATH_VERSION_HEX.
+# A string is for humans and logs; a tuple is for `if version_info() >= (0, 2)`, which
+# string comparison gets wrong the moment a component reaches double digits ("0.1.10"
+# sorts before "0.1.9").
+
+__version_info__ = tuple(int(p) for p in __version__.split("."))
+
+
+def version_info() -> tuple[int, ...]:
+    """The version as integers, for comparison. `version()` is the one to print."""
+    return __version_info__
+
+
 def version() -> str:
     """The engine version, for recording alongside anything it measured."""
     return __version__
@@ -134,6 +150,7 @@ def describe() -> dict:
     return {
         "name": "voicemetric",
         "version": __version__,
+        "version_info": list(__version_info__),
         "signature": signature(),
         "components": list(COMPONENTS),
         "weights": dict(WEIGHTS),
@@ -150,4 +167,5 @@ __all__ = [
     "fit_weights", "grade", "preservation", "score_text", "similarity_report",
     "span_floor", "style_delta", "tokenize", "tpr_at_fpr",
     "SPAN_BUCKETS", "describe", "signature", "version",
+    "version_info",
 ]

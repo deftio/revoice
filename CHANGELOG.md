@@ -138,6 +138,53 @@ Also: the undated-changelog message suggested `sed -i ''`, which is correct on B
 broken on GNU. Suggesting a command that fails is worse than suggesting none, so the
 script detects which `sed` is installed and emits that one.
 
+### Added — runtime version support, on every package and the browser engine
+Every package in this family reports its own version at runtime, in a form you print and
+a form you compare — `bw.version` / `bw.versionInfo` / `bw.getVersion()`, or
+`FR_MATH_VERSION` beside a packed `FR_MATH_VERSION_HEX`. revoice had only the string, on
+three packages that move independently, with no way to ask for all of them at once.
+
+```python
+revoice.version()            # "0.1.10"        to print
+revoice.version_info()       # (0, 1, 10)      to compare
+revoice.versions()           # every component, one call
+revoice.voicemetric.version_info()   # and on each sub-package
+revoice.rubric.version_info()
+```
+
+```bash
+revoice --version     # revoice 0.1.10
+revoice --versions    # the tool, both engines, and the engine signature
+```
+
+**The tuple is not a style preference.** `"0.1.10" < "0.1.9"` is *true* as strings, and
+that is exactly the range revoice is in — the bug arrives on the tenth patch of any
+minor. A test asserts both halves of that so the reason cannot be forgotten.
+
+`versions()` carries the **signature** as well as the versions, because the signature
+changes when the scoring configuration changes *without* the version moving — 0.5.0
+shipped with 0.4.0's signature deliberately — so versions alone cannot tell you whether
+two results are comparable. That set is what a bug report should carry, and `doctor`
+and `--versions` both read it rather than assembling their own.
+
+The browser engine reports itself too: `vmVersion()`, `vmVersionInfo()`, `vmSignature()`
+and `vmVersions()`. It matters more there than anywhere, because that file is a *port* —
+"which engine produced this number" is the question a surprising result turns on. The
+values are generated from `revoice.versions()` into `engine-constants.js`, so the page
+cannot claim a version the package does not have, and a parity test asserts it.
+
+### Changed — the release version comes from the code, not from a parse
+`release.sh` carried its own regex over `revoice/__init__.py` — a second implementation
+of `revoice.version()`, and therefore a second source of truth that could drift. It
+could not even detect that it had: the old "runtime and packaging agree" check existed
+purely to compare the script's parse against the package's, which is a check you only
+need once you have made the mistake of parsing. The script now asks
+`revoice.version()`, and that check is gone.
+
+It also no longer computes a suggested next version. Whether the next release is a
+patch, a minor or a major is a judgement about what changed; the script names the file
+where that decision is recorded and gets out of the way.
+
 ### Changed — `release.sh` does the mechanical work instead of assigning it
 The script refused `--release` with *"no 'main' branch here … Fetch it: `git fetch origin
 main:main`"* — telling you to type a command it could have run, after several minutes of

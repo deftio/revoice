@@ -493,6 +493,9 @@ def test_every_ported_function_has_a_python_counterpart_under_test():
         "vmContentTerms": "content_terms", "vmTfidfVector": "tfidf_vector",
         "vmCosine": "cosine", "vmFingerprint": "fingerprint",
         "vmMeanStd": "_mean_std", "vmBaselineFromTexts": "baseline_from_texts",
+        # runtime version support, mirroring the package accessors
+        "vmVersion": "version", "vmVersionInfo": "version_info",
+        "vmSignature": "signature", "vmVersions": "versions",
         "vmScalarSimilarity": "_scalar_similarity",
         "vmHistSimilarity": "_hist_similarity", "vmScoreText": "score_text",
     }
@@ -502,12 +505,16 @@ def test_every_ported_function_has_a_python_counterpart_under_test():
         "Add the pair here (and a parity assertion), or move the function below the "
         "PAGE-ONLY marker in pages/voicemetric.js.")
 
+    import revoice
+    from revoice import voicemetric as py_vm
     from revoice.voicemetric import baseline as py_baseline
     from revoice.voicemetric import features as py_features
+
+    sources = (py_features, py_baseline, py_vm, revoice)
     for js_name, py_name in PAIRS.items():
         if py_name is None:
             continue
-        assert hasattr(py_features, py_name) or hasattr(py_baseline, py_name), (
+        assert any(hasattr(src, py_name) for src in sources), (
             f"{js_name} claims to mirror {py_name}, which no longer exists in Python")
 
 
@@ -616,3 +623,39 @@ def test_the_report_page_loads_the_engine_and_is_in_the_nav():
     for script in ("engine-constants.js", "voicemetric.js", "voicespace.js"):
         assert f'src="{script}"' in page, f"report.html does not load {script}"
     assert "'report.html'" in (ROOT / "pages" / "site.js").read_text(), "not in the nav"
+
+
+@node
+def test_the_browser_engine_reports_the_same_versions_as_the_package():
+    """The page must not be able to claim a version the package does not have.
+
+    This file is a PORT, so "which engine produced this number" is the question a
+    surprising result turns on — and the signature answers whether two results are
+    comparable at all, even when no version moved. All of it is generated from
+    `revoice.versions()`, and this is the assertion that it stayed generated.
+    """
+    import revoice
+
+    js = _run_node("process.stdout.write(JSON.stringify({"
+                   "versions: vmVersions(), version: vmVersion(), "
+                   "info: vmVersionInfo(), sig: vmSignature()}));")
+    assert js["versions"] == revoice.versions()
+    assert js["version"] == revoice.voicemetric.version()
+    assert js["info"] == list(revoice.voicemetric.version_info())
+    assert js["sig"] == revoice.voicemetric.signature()
+
+
+@node
+def test_the_pages_version_file_agrees_with_the_engine_constants():
+    """Two generated files carry versions; both come from the same call, and this is
+    what keeps that true rather than merely intended."""
+    import re
+
+    text = (ROOT / "pages" / "version.js").read_text()
+    m = re.search(r"var REVOICE_VERSION = (\{.*?\});", text, re.S)
+    assert m, "pages/version.js does not define REVOICE_VERSION"
+    page = json.loads(m.group(1))
+
+    js = _run_node("process.stdout.write(JSON.stringify(vmVersions()));")
+    for key in ("revoice", "voicemetric", "rubric"):
+        assert page[key] == js[key], f"{key}: version.js {page[key]} vs engine {js[key]}"

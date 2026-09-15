@@ -37,7 +37,24 @@ __version__ = "1.0.0"
 __all__ = [
     "judge_all", "judge_dimension", "load_rubrics_file", "vote_metrics", "Llm",
     "version", "describe", "rubric_signature",
+    "version_info",
 ]
+
+
+# --- runtime version support ---------------------------------------------------
+# Every package in this family reports its own version at runtime, in a form you can
+# print and a form you can compare: bitwrench has `bw.version` / `bw.versionInfo` /
+# `bw.getVersion()`, fr_math has FR_MATH_VERSION alongside a packed FR_MATH_VERSION_HEX.
+# A string is for humans and logs; a tuple is for `if version_info() >= (0, 2)`, which
+# string comparison gets wrong the moment a component reaches double digits ("0.1.10"
+# sorts before "0.1.9").
+
+__version_info__ = tuple(int(p) for p in __version__.split("."))
+
+
+def version_info() -> tuple[int, ...]:
+    """The version as integers, for comparison. `version()` is the one to print."""
+    return __version_info__
 
 
 def version() -> str:

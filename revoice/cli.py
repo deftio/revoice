@@ -44,8 +44,24 @@ _cfg_opt = typer.Option(None, "--config", "-c", help="Path to revoice.yaml (defa
 
 
 def _version(v: bool):
+    """`--version` stays one line; `--versions` reports every component.
+
+    The tool, the metric engine and the rubric engine move independently, and a result
+    is only reproducible if you know all three — plus the engine signature, which
+    changes when the scoring configuration changes WITHOUT the version moving. That is
+    the set `revoice.versions()` returns, and it is what belongs in a bug report.
+    """
     if v:
         typer.echo(f"revoice {__version__}")
+        raise typer.Exit()
+
+
+def _versions(v: bool):
+    if v:
+        import revoice
+
+        for name, value in revoice.versions().items():
+            typer.echo(f"{name:<24}{value}")
         raise typer.Exit()
 
 
@@ -53,6 +69,9 @@ def _version(v: bool):
 def _main(
     version: bool = typer.Option(False, "--version", "-V", callback=_version, is_eager=True, help="Print version and "
               "exit."),
+    versions: bool = typer.Option(False, "--versions", callback=_versions, is_eager=True,
+              help="Print every component's version (tool, metric engine, rubric engine) "
+                   "and the engine signature, then exit. This is what a bug report wants."),
 ):
     pass
 
@@ -325,14 +344,17 @@ def doctor(config: Path = _cfg_opt):
 
     Prints the exact raw model output so JSON/format problems are visible instead of silent.
     """
-    import revoice.voicemetric as voicemetric
-    from revoice import rubric
+
+    import revoice
 
     cfg = load_config(config)
+    v = revoice.versions()
     typer.secho("engines", bold=True)
-    typer.echo(f"  voicemetric {voicemetric.version()}  signature {voicemetric.signature()}"
+    typer.echo(f"  revoice     {v['revoice']}"
+               "                       (the tool)")
+    typer.echo(f"  voicemetric {v['voicemetric']}  signature {v['voicemetric_signature']}"
                "   (measures voice similarity)")
-    typer.echo(f"  rubric      {rubric.version()}"
+    typer.echo(f"  rubric      {v['rubric']}"
                "                        (judges quality)")
     typer.echo("  a pack scored under a different signature is not comparable to one scored now")
     typer.echo("")
