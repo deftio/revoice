@@ -284,7 +284,26 @@ fi
 # together. Nothing below this line can be answered by a command you type once.
 report_needs
 
-# ------------------------------------------------------------------- 3. test (CI) ----
+# ------------------------------------------------------ 3. environment (CI parity) ----
+step "Environment"
+# The gates below claim to be "the same gates CI runs", and that claim is only true if
+# the environment is the same too. .github/workflows/ci.yml does exactly this pair
+# before testing; without it, tests/test_core_extra.py exercises .docx/.pptx/.pdf
+# extraction whose libraries are absent and three tests fail for a reason that has
+# nothing to do with the release.
+#
+# This is not a violation of the read-only contract. That contract is about what gets
+# COMMITTED and shipped — no version bumps, no changelog edits, no regenerated site
+# data. .venv/ is gitignored and is not part of what ships; refusing to prepare it
+# would mean the local gates quietly test something other than what CI tests, which is
+# the failure the contract exists to prevent.
+uv sync --quiet --all-extras 2>/dev/null || die "could not sync the environment.
+       See why:  uv sync --all-extras"
+uv pip install --quiet pytest pytest-cov ruff 2>/dev/null || die "could not install the test tools.
+       See why:  uv pip install pytest pytest-cov ruff"
+ok "environment matches CI (uv sync --all-extras, plus pytest/pytest-cov/ruff)"
+
+# ------------------------------------------------------------------- 4. test (CI) ----
 step "Test (the same gates CI runs)"
 
 # These fail one at a time on purpose — unlike the repo-state checks above, a broken test
@@ -317,7 +336,7 @@ gate "voice-metric bench runs clean" \
      "uv run revoice bench examples/voices --lengths 50,200 -n 10 --no-content-control" \
      uv run --quiet revoice bench examples/voices --lengths 50,200 -n 10 --no-content-control
 
-# -------------------------------------------------------------------- 4. build all ----
+# -------------------------------------------------------------------- 5. build all ----
 step "Build"
 rm -rf dist
 uv build >/dev/null 2>&1 || die "the build failed.
@@ -355,7 +374,7 @@ for name in ("rubric/README.md", "voicemetric/README.md", "static/index.html"):
 PYEOF
 ok "wheel installs cleanly, reports $VERSION, carries its package data"
 
-# ---------------------------------------------------------------------- 5. summary ----
+# ---------------------------------------------------------------------- 6. summary ----
 NOTES=$(sed -n "/^## $VERSION/,/^## /p" CHANGELOG.md | sed '1d;$d')
 if [ "$DO_PR" -eq 0 ]; then
   step "Ready"
@@ -373,7 +392,7 @@ EOF
   exit 0
 fi
 
-# ------------------------------------------------------------------ 6. push and PR ----
+# ------------------------------------------------------------------ 7. push and PR ----
 step "Pull request"
 RELEASE_BRANCH="$BRANCH"
 if [ "$BRANCH" = "$MAIN_BRANCH" ]; then
@@ -410,7 +429,7 @@ EOF
   exit 0
 fi
 
-# ------------------------------------------------------ 7. wait for CI, then merge ----
+# ------------------------------------------------------ 8. wait for CI, then merge ----
 step "Waiting for CI"
 note "the local gates above were a fast filter; this is the run that decides"
 note "watching $PR_URL (timeout ${CI_TIMEOUT}s)"
@@ -437,7 +456,7 @@ git tag -a "v$VERSION" -m "revoice $VERSION"
 git push -q origin "v$VERSION"
 ok "tagged v$VERSION on $(git rev-parse --short HEAD)"
 
-# -------------------------------------------------------------- 8. publish: GitHub ----
+# -------------------------------------------------------------- 9. publish: GitHub ----
 step "GitHub Release"
 printf '%s\n' "$NOTES" > "$VERIFY_ENV/notes.md"
 gh release create "v$VERSION" --title "revoice $VERSION" --notes-file "$VERIFY_ENV/notes.md" \
@@ -446,7 +465,7 @@ REL_URL=$(gh release view "v$VERSION" --json url -q .url)
 ok "published $REL_URL"
 note "the attached wheel and sdist are the ones built and test-installed above"
 
-# ---------------------------------------------------------------- 9. publish: PyPI ----
+# --------------------------------------------------------------- 10. publish: PyPI ----
 if [ "$DO_PYPI" -eq 1 ]; then
   step "PyPI"
   [ -n "${UV_PUBLISH_TOKEN:-}" ] \
