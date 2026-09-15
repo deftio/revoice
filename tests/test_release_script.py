@@ -291,7 +291,15 @@ def test_an_undated_changelog_hands_back_the_exact_edit():
         # a runnable line, with today's date already substituted in
         assert f"## {v} - {today}" in r.stderr
         assert "sed -i" in r.stderr and "CHANGELOG.md" in r.stderr
-        assert "GNU sed" in r.stderr, "the BSD/GNU difference bites everyone once"
+        # BSD sed needs the empty arg, GNU sed refuses it. The script must suggest the
+        # one that is actually installed — wrong advice is worse than none.
+        import subprocess as sp
+        gnu = sp.run(["sed", "--version"], capture_output=True).returncode == 0
+        suggested = next(line for line in r.stderr.splitlines() if "sed -i" in line)
+        if gnu:
+            assert "sed -i ''" not in suggested, f"GNU sed given BSD syntax: {suggested}"
+        else:
+            assert "sed -i ''" in suggested, f"BSD sed given GNU syntax: {suggested}"
     finally:
         changelog.write_text(original)
 

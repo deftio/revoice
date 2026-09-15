@@ -136,6 +136,11 @@ confirm() {
   case "$reply" in [yY]*) return 0 ;; *) die "stopped at your request — nothing was changed" ;; esac
 }
 
+# BSD sed needs an empty argument after -i, GNU sed refuses one. The script suggests a
+# sed command when the changelog is undated, and suggesting the wrong one is worse than
+# suggesting none — so it works out which is installed rather than telling you to.
+if sed --version >/dev/null 2>&1; then SED_INPLACE="sed -i"; else SED_INPLACE="sed -i ''"; fi
+
 PY=$(command -v python3 || true)
 [ -n "$PY" ] || die "python3 not found.
        Install it from https://www.python.org/downloads/  or:  brew install python"
@@ -241,10 +246,8 @@ case "$CHANGELOG_PROBLEM" in
   undated)
     need "CHANGELOG.md still marks $VERSION as (unreleased)" \
          "Date the heading:" \
-         "  sed -i '' 's/^## $VERSION (unreleased)\$/## $VERSION - $TODAY/' CHANGELOG.md" \
-         "  git commit -am \"Release $VERSION\"" \
-         "" \
-         "(GNU sed: drop the '' after -i)" ;;
+         "  $SED_INPLACE 's/^## $VERSION (unreleased)\$/## $VERSION - $TODAY/' CHANGELOG.md" \
+         "  git commit -am \"Release $VERSION\"" ;;
   missing)
     need "CHANGELOG.md has no '## $VERSION' section" \
          "Add one at the top of the file, under '# Changelog':" \
