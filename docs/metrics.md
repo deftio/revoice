@@ -741,6 +741,171 @@ than the voice composite is. That does not argue for putting it back in the scor
 argues that the voice components' failure is not only discrimination but self-knowledge,
 and it is a useful upper bound on what better calibration might recover here.
 
+## 1i. How good is the confidence interval? (`bench.interval_coverage`)
+
+Every report here leads with an interval, and §1e argues the interval is the honest part
+— the thing that stops a bare number inviting a decision it cannot support. That argument
+is worth exactly as much as the interval's **coverage**, and until now coverage had never
+been measured. Two separate things are involved and they got different verdicts.
+
+### The likelihood ratios are honest about knowing little
+
+`Cllr` decomposes into discrimination cost (`Cllr_min`) and calibration cost
+(`Cllr_cal`). Composite scorer, full corpus:
+
+| length | Cllr | Cllr_min | Cllr_cal | calibration's share |
+|---|---|---|---|---|
+| 50 | 0.990 | 0.988 | 0.002 | 0% |
+| 200 | 0.950 | 0.947 | 0.003 | 0% |
+| 800 | 0.888 | 0.878 | 0.010 | 1% |
+| 1600 | 0.826 | 0.808 | 0.018 | 2% |
+
+**Essentially none of the cost is miscalibration.** The scores are not overconfident;
+they are well-calibrated statements of near-ignorance. That is the good version of a bad
+number — the system is weak and says so, rather than being weak and claiming otherwise.
+It also means calibration work (§6) cannot recover much here directly: `Cllr_cal` is
+already ~0.007, so the whole prize is in `Cllr_min`, i.e. discrimination.
+
+### The bootstrap interval: calibrated on differences, thin-tailed on levels
+
+`bench.interval_coverage` splits a document's windows alternately into halves A and B —
+alternately, so both span the whole document and a front-to-back register drift is not
+blamed on the interval. Two tests, because the obvious one is unfair and it took a wrong
+answer to notice.
+
+**Primary — the null difference.** A and B are the same author, same work, same topic:
+their true difference is **zero by construction**. Bootstrap that difference the way
+`transfer.style_delta` does and ask how often the interval contains zero. 841 documents:
+
+| nominal | covered | error |
+|---|---|---|
+| 0.50 | 0.555 | +0.055 |
+| 0.80 | 0.847 | +0.047 |
+| 0.90 | **0.916** | **+0.016** |
+| 0.95 | **0.958** | **+0.008** |
+
+**Well calibrated, very slightly conservative.** At the 90% level that the `moved`
+verdict in §1f actually depends on, coverage is 91.6%. This is the construction behind
+the rail, the `moved` rule and `rewrite-score`, and it holds up.
+
+**Secondary — half against half.** Build the interval from A, take the point from B, ask
+whether B lands inside A's band. This is the intuitive test and it is **systematically
+pessimistic**: A's band carries A's sampling noise while B's point carries its own, so
+the tested quantity has √2 times the spread the band was built for. A *perfectly*
+calibrated 90% interval scores 0.755 here, not 0.90 — which is why `expected` is printed
+beside the observed value.
+
+| nominal | covered | expected | error |
+|---|---|---|---|
+| 0.50 | 0.370 | 0.367 | +0.003 |
+| 0.80 | 0.609 | 0.635 | −0.026 |
+| 0.90 | 0.668 | 0.755 | **−0.087** |
+| 0.95 | 0.719 | 0.834 | **−0.115** |
+
+The error is ~0 at the median and grows monotonically with the confidence level. **The
+body of the interval is right and the tails are too thin.** A 95% interval on an absolute
+similarity behaves like an 86% one.
+
+And the misses are strongly one-sided: **205 above the band against 74 below**, 2.8 to 1.
+A second sample of the *same document* reads higher than the first sample's upper bound
+far more often than it reads lower. The practical consequence is that the **upper edge of
+an absolute similarity interval is not a bound you can lean on** — the honest reading can
+be higher than the band allows, so "this is clearly not a match" is the claim to distrust
+first, not "this might be".
+
+A plausible mechanism, recorded as untested: axis similarity is `exp(-|deviation|)`,
+convex and bounded above at 100, and the point estimate averages the z-vectors *before*
+transforming. Resamples that land on a less extreme mean z get a steeply higher
+similarity, so the statistic is right-skewed and a percentile bootstrap over 4–8 windows
+underestimates that upper tail. BCa or a bias-corrected bootstrap is the standard fix.
+Not applied: it changes reported intervals and therefore every published figure, and this
+finding should sit in the record before anyone acts on it.
+
+### What this means for reading a report
+
+| the question | trust it? |
+|---|---|
+| *Did this rewrite move toward the voice?* (§1f, `moved`) | **Yes.** 91.6% at nominal 90%. |
+| *Do these two readings overlap?* (§1e rail) | **Yes**, with the caveat below. |
+| *Is the true similarity at most X?* | **No.** The upper edge runs low; misses are 2.8:1 above. |
+| *Is a 95% absolute interval really 95%?* | **No.** It behaves like ~86%. |
+
+The measurement this project has been most confident about — that a bare number needs its
+interval — survives. The specific arithmetic is sound where it is used for differences and
+optimistic in the upper tail where it is used for levels.
+
+## 1j. The browser engine, and how it drifted (`pages/voicemetric.js`)
+
+§5 rules out every dependency tier that cannot run in a page served off GitHub Pages, so
+the engine exists twice: once in Python, once in JavaScript. Two implementations drift.
+This is the record of how far, and what now prevents it.
+
+**What happened.** `pages/stylometry.js` began as "a JS port of the demo subset". The
+Python composite was then refitted three times (§1c.2) and grew from four components to
+ten. Nothing compared them, so nothing complained. `scripts/export_demo_baselines.py`
+carried a third copy of the same arithmetic, under a docstring instructing the reader to
+"keep the weights in sync".
+
+| | Python, fitted | page, hand-typed |
+|---|---|---|
+| components | 10 | 4 |
+| `delta` | 0.318 | 0.200 |
+| `ngram` | 0.181 | **0.600** |
+| `punct` | 0.332 | 0.100 |
+| `rhythm` | **0.000** | 0.100 |
+| `richness` / `structure` | 0.104 / 0.064 | absent |
+| `fwbigram`, `opener`, `syntax`, `vocab` | present | absent |
+
+**What it cost.** 112 trials, 28 authors, same protocol both sides:
+
+| engine | AUC | EER |
+|---|---|---|
+| `voicemetric.baseline` (Python) | **0.793** | 0.286 |
+| `stylometry.js` composite | 0.688 | 0.321 |
+| `stylometry.js` z — *the number compare.html led with* | **0.662** | 0.393 |
+
+Individual cases were worse than the aggregate suggests. Against a Twain reference,
+Python ranked Twain's own other work highest (58.4) over Harte (53.8) and Darwin (52.1);
+the page ranked it **lowest** (Harte 59.0, Darwin 58.3, Twain 53.6). demo.html used that
+engine exclusively, so every number it showed came from it.
+
+**The fix, and why it is structural.** `pages/voicemetric.js` is a full port of
+`features.py` + `baseline.py`. It agrees with Python on **112 of 112 trials** and
+reproduces AUC 0.793 exactly. But a correct port is a snapshot; what matters is what
+holds it there:
+
+1. **Data is generated, not copied.** `pages/engine-constants.js` is emitted from Python
+   by `export_demo_baselines.py` and covers every word list, bin edge, component weight,
+   axis definition and punctuation set. `voicespace.js` was migrated onto it as well.
+   Nothing on either side is hand-typed data. This is the load-bearing change: the
+   algorithms were never wrong, the *numbers typed beside them* were.
+2. **Algorithms are tested.** `tests/test_pages_parity.py` runs the JavaScript under node
+   against Python on corpus fixtures — all 29 fingerprint fields, the composite, all ten
+   components, the weights, every constant, plus a staleness check asserting that
+   regenerating the constants is a no-op.
+3. **Additions cannot skip the net.** A completeness test enumerates the JS exports and
+   fails on any that is neither paired to a named Python function nor declared page-only
+   below an explicit marker in the file.
+
+**On "exact".** Agreement is to a stated tolerance per family. Python's `round()` breaks
+exact ties to even and JavaScript's `Math.round()` away from zero; `fingerprint()` rounds
+about 25 values, and a ratio like 1/32 is an exact tie at four places. On three documents,
+367 of 368 scalar values were bit-identical and the one difference was exactly that
+(137.125 → 137.12 against 137.13). Emulating CPython's rounding costs real complexity in
+the hot path for a difference invisible against a composite reported to one decimal of
+100. What the tolerances do not permit is a difference in *what is computed*: a missing
+component or a wrong weight moves a composite by whole points.
+
+One thing is held exact rather than tolerant. N-gram counting uses `Map`, not a plain
+object: keys that look like array indices — `"123"` is a real char 3-gram — are enumerated
+before string keys in JavaScript, which would reorder the whole top-300 selection. That
+is not a rounding difference, so it is not allowed to be one.
+
+**The general lesson.** `voicespace.js` and `stylometry.js` sat in the same directory for
+months. One held parity to 1e-9 and the other decayed to a different model. The difference
+between them was not care, review or comments — `stylometry.js` had a comment asking for
+exactly the discipline it did not get. The difference was that one had a test.
+
 ## 2. What the field does
 
 ### 2.1 Classical track
@@ -1165,6 +1330,10 @@ technical prose. That domain shift is real and is exactly what the bench exists 
    which corrected a sourceless claim in `yules_k` and found two axes running dead in
    the bench.
 8. ~~**Score abstention properly.**~~ **Done** (0.1.9) — §1h, c@1 alongside AUC/EER.
+8b. ~~**Measure the interval's coverage.**~~ **Done** (0.1.10) — §1i. Differences are
+   calibrated (91.6% at nominal 90%); absolute levels are thin-tailed (95% behaves like
+   86%) with one-sided misses. A BCa bootstrap is the fix and is deliberately deferred,
+   because applying it moves every interval this project has published.
 9. **General Imposters calibration.** The gating item, and the binding constraint: Cllr
    sits near 0.94, so the likelihood ratios carry almost no information in absolute
    terms even where the ranking is usable. More features do not fix calibration;

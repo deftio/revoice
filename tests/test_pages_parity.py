@@ -14,6 +14,7 @@ bare environment — but in CI, where node exists, a drift is a hard failure.
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,8 @@ from revoice.voicemetric.space import AXIS_NAMES, coordinates
 
 ROOT = Path(__file__).parent.parent
 JS = ROOT / "pages" / "voicespace.js"
+ENGINE = ROOT / "pages" / "voicemetric.js"
+CONSTANTS = ROOT / "pages" / "engine-constants.js"
 
 FIXTURES = {
     "narrative": ("When I was well grown, at last, I was sold and taken away, and I never saw "
@@ -44,7 +47,8 @@ def _js_coordinates(texts: dict[str, str]) -> dict[str, dict]:
     """Run the page's own JS and return its coordinates for each fixture."""
     script = f"""
 const fs = require('fs');
-const mod = new Function(fs.readFileSync({str(JS)!r}, 'utf8') +
+const mod = new Function(fs.readFileSync({str(CONSTANTS)!r}, 'utf8') +
+  fs.readFileSync({str(ENGINE)!r}, 'utf8') + fs.readFileSync({str(JS)!r}, 'utf8') +
   '; return {{vsCoordinates, VS_AXIS_NAMES, vsFitRegion, vsSimilarityReport, vsRenderChart}};')();
 const texts = {json.dumps(texts)};
 const out = {{}};
@@ -79,7 +83,8 @@ def test_js_and_python_coordinates_agree():
 def test_js_similarity_report_has_the_python_shape():
     script = f"""
 const fs = require('fs');
-const m = new Function(fs.readFileSync({str(JS)!r}, 'utf8') +
+const m = new Function(fs.readFileSync({str(CONSTANTS)!r}, 'utf8') +
+  fs.readFileSync({str(ENGINE)!r}, 'utf8') + fs.readFileSync({str(JS)!r}, 'utf8') +
   '; return {{vsFitRegion, vsSimilarityReport, vsRenderChart, VS_AXIS_NAMES}};')();
 const pop = JSON.parse(fs.readFileSync({str(ROOT / 'pages' / 'demo' / 'population.json')!r}, 'utf8'));
 const texts = {json.dumps(list(FIXTURES.values()))};
@@ -108,7 +113,8 @@ def test_js_similarity_is_deterministic():
     """Seeded PRNG, not Math.random: the same text must always give the same interval."""
     script = f"""
 const fs = require('fs');
-const m = new Function(fs.readFileSync({str(JS)!r}, 'utf8') +
+const m = new Function(fs.readFileSync({str(CONSTANTS)!r}, 'utf8') +
+  fs.readFileSync({str(ENGINE)!r}, 'utf8') + fs.readFileSync({str(JS)!r}, 'utf8') +
   '; return {{vsFitRegion, vsSimilarityReport}};')();
 const pop = JSON.parse(fs.readFileSync({str(ROOT / 'pages' / 'demo' / 'population.json')!r}, 'utf8'));
 const t = {json.dumps(list(FIXTURES.values()))};
@@ -205,7 +211,8 @@ def _js_transfer(pairs: dict, population: dict, region_texts: list[str]) -> dict
     than re-testing coordinate parity, which the tests above already cover."""
     script = f"""
 const fs = require('fs');
-const mod = new Function(fs.readFileSync({str(JS)!r}, 'utf8') +
+const mod = new Function(fs.readFileSync({str(CONSTANTS)!r}, 'utf8') +
+  fs.readFileSync({str(ENGINE)!r}, 'utf8') + fs.readFileSync({str(JS)!r}, 'utf8') +
   '; return {{vsPreservation, vsStyleDelta, vsGrade, vsFitRegion}};')();
 const pairs = {json.dumps(pairs)};
 const pop = {json.dumps(population)};
@@ -276,3 +283,379 @@ def test_an_identical_rewrite_moves_nothing_in_both_implementations():
                       _POP.to_dict(), _REGION_TEXTS)
     assert js["self"]["grade"]["style"]["delta"] == pytest.approx(0.0, abs=1e-9)
     assert js["self"]["grade"]["meaning"]["overall"] == 1.0
+
+
+# =================================================================================
+# The engine itself: pages/voicemetric.js against features.py + baseline.py.
+#
+# This is the half that had never been tested, and the cost of that shows in the
+# history. pages/stylometry.js began life as "a JS port of the demo subset", the Python
+# was refitted three times and grew six components, and nothing compared them. By the
+# time anyone measured, the page was scoring with `ngram` weighted 0.600 against a
+# fitted 0.181 and no `richness` or `structure` at all — AUC 0.688 against Python's
+# 0.793 on the same 112 trials, and it ranked Twain's own other work as less like Twain
+# than Bret Harte was.
+#
+# Tolerances are per family and stated, not bit-exact. The residual is rounding —
+# Python's round() breaks exact ties to even, JavaScript's Math.round() away from zero,
+# and fingerprint() rounds ~25 values. A ratio like 1/32 is an exact tie at four places.
+# What the tolerances do NOT permit is a difference in what is computed: a missing
+# component or a wrong weight moves a composite by whole points, not by 1e-2.
+
+FP_TOLERANCE = 0.011        # one unit at the coarsest rounding in fingerprint() (2 dp)
+COMPONENT_TOLERANCE = 1e-9  # components are computed from rounded inputs, then rounded
+COMPOSITE_TOLERANCE = 0.05  # out of 100
+
+
+def _engine_script(body: str) -> str:
+    return f"""
+const fs = require('fs');
+eval(fs.readFileSync({str(CONSTANTS)!r}, 'utf8'));
+eval(fs.readFileSync({str(ENGINE)!r}, 'utf8'));
+eval(fs.readFileSync({str(JS)!r}, 'utf8'));
+{body}
+"""
+
+
+def _run_node(body: str):
+    r = subprocess.run(["node", "-e", _engine_script(body)],
+                       capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout)
+
+
+def _flatten(prefix, value, out):
+    """Every number in a fingerprint, addressed by path, so a diff names its own field."""
+    if isinstance(value, bool):
+        out[prefix] = float(value)
+    elif isinstance(value, (int, float)):
+        out[prefix] = float(value)
+    elif isinstance(value, list):
+        for i, v in enumerate(value):
+            _flatten(f"{prefix}[{i}]", v, out)
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            _flatten(f"{prefix}.{k}", v, out)
+    return out
+
+
+@node
+def test_fingerprint_matches_the_page_field_for_field():
+    """All 29 fields, on real corpus prose rather than a toy string."""
+    from revoice.voicemetric.features import fingerprint
+
+    texts = dict(FIXTURES)
+    corpus = ROOT / "bench-corpus" / "twain" / "training-data"
+    if corpus.is_dir():
+        for f in sorted(corpus.glob("*.md"))[:2]:
+            texts[f.stem] = f.read_text()[:6000]
+
+    js = _run_node(f"""
+const texts = {json.dumps(texts)};
+const out = {{}};
+for (const k of Object.keys(texts)) out[k] = vmFingerprint(texts[k]);
+process.stdout.write(JSON.stringify(out));""")
+
+    for name, text in texts.items():
+        py, got = fingerprint(text), js[name]
+        assert set(py) == set(got), f"{name}: field sets differ"
+        a, b = _flatten("", py, {}), _flatten("", got, {})
+        assert set(a) == set(b), f"{name}: leaf sets differ"
+        for key in a:
+            assert abs(a[key] - b[key]) <= FP_TOLERANCE, (
+                f"{name}{key}: python {a[key]!r} vs page {b[key]!r}")
+
+
+@node
+def test_the_composite_and_every_component_match_the_page():
+    """The number the page actually shows, against the number `revoice stats` shows."""
+    from revoice.voicemetric.baseline import COMPONENTS, baseline_from_texts, score_text
+    from revoice.voicemetric.space import windows
+
+    corpus = ROOT / "bench-corpus"
+    if not corpus.is_dir():
+        pytest.skip("bench corpus not fetched")
+    ref = sorted((corpus / "twain" / "training-data").glob("*.md"))[0].read_text()[:14000]
+    cands = {}
+    for author in ("twain", "darwin", "harte"):
+        d = corpus / author / "training-data"
+        if d.is_dir():
+            cands[author] = sorted(d.glob("*.md"))[-1].read_text()[:4000]
+
+    ref_windows = windows(ref)
+    js = _run_node(f"""
+const refw = {json.dumps(ref_windows)}, cands = {json.dumps(cands)};
+const base = vmBaselineFromTexts(refw);
+const out = {{}};
+for (const k of Object.keys(cands)) out[k] = vmScoreText(cands[k], base);
+process.stdout.write(JSON.stringify(out));""")
+
+    base = baseline_from_texts(ref_windows)
+    for name, text in cands.items():
+        py, got = score_text(text, base), js[name]
+        assert abs(py["composite"] - got["composite"]) <= COMPOSITE_TOLERANCE, (
+            f"{name}: composite python {py['composite']} vs page {got['composite']}")
+        for c in COMPONENTS:
+            assert abs(py["components"][c] - got["components"][c]) <= COMPONENT_TOLERANCE, (
+                f"{name}/{c}: python {py['components'][c]} vs page {got['components'][c]}")
+        assert abs(py["burrows_delta"] - got["burrows_delta"]) <= 1e-3
+        assert py["reliable"] == got["reliable"]
+
+
+@node
+def test_the_page_uses_the_fitted_weights_not_a_copy_of_them():
+    """The specific failure that motivated all of this.
+
+    The old engine had 0.2/0.6/0.1/0.1 hand-typed into it while the fitted values were
+    0.318/0.181/0.0/0.332 across ten components. Nothing detected it for months because
+    nothing compared them. Now the weights are generated, and this asserts the generated
+    file still agrees with the Python it was generated from.
+    """
+    from revoice.voicemetric.baseline import COMPONENTS, WEIGHTS
+
+    js = _run_node("process.stdout.write(JSON.stringify("
+                   "{weights: VM_CONST.WEIGHTS, components: VM_CONST.COMPONENTS}));")
+    assert js["components"] == list(COMPONENTS)
+    assert js["weights"] == pytest.approx(WEIGHTS)
+
+
+@node
+def test_generated_constants_match_python_exactly():
+    """Every shared constant, not only the weights. Sets are compared as sets."""
+    from revoice.voicemetric.baseline import PUNCTS, SCALARS
+    from revoice.voicemetric.features import (
+        FUNCTION_WORDS,
+        OPENER_CLASSES,
+        PARA_HIST_BINS,
+        SENT_HIST_BINS,
+        STOP,
+        WORD_HIST_BINS,
+    )
+    from revoice.voicemetric.space import AXIS_NAMES, MIN_SPREAD
+    from revoice.voicemetric.transfer import HEDGES, MEANING_FLOOR, NEGATIONS
+
+    js = _run_node("process.stdout.write(JSON.stringify(VM_CONST));")
+    assert js["FUNCTION_WORDS"] == list(FUNCTION_WORDS)
+    assert js["OPENER_CLASSES"] == list(OPENER_CLASSES)
+    assert js["SENT_HIST_BINS"] == list(SENT_HIST_BINS)
+    assert js["WORD_HIST_BINS"] == list(WORD_HIST_BINS)
+    assert js["PARA_HIST_BINS"] == list(PARA_HIST_BINS)
+    assert js["PUNCTS"] == list(PUNCTS)
+    assert js["SCALARS"] == list(SCALARS)
+    assert set(js["STOP"]) == STOP
+    assert set(js["NEGATIONS"]) == NEGATIONS
+    assert set(js["HEDGES"]) == HEDGES
+    assert js["MEANING_FLOOR"] == MEANING_FLOOR
+    assert js["MIN_SPREAD"] == MIN_SPREAD
+    assert [a["name"] for a in js["AXES"]] == list(AXIS_NAMES)
+
+
+@node
+def test_the_generated_constants_file_is_not_stale():
+    """Regenerating must be a no-op. Otherwise the page ships constants nobody fitted."""
+    import subprocess as sp
+
+    before = CONSTANTS.read_bytes()
+    try:
+        sp.run([sys.executable, str(ROOT / "scripts" / "export_demo_baselines.py")],
+               capture_output=True, check=True, cwd=ROOT)
+        assert CONSTANTS.read_bytes() == before, (
+            "pages/engine-constants.js is stale — run scripts/export_demo_baselines.py")
+    finally:
+        CONSTANTS.write_bytes(before)
+
+
+def test_every_ported_function_has_a_python_counterpart_under_test():
+    """The guard that would have caught the original drift.
+
+    A function added to the JS engine without a Python twin, or a Python function
+    ported without a parity test, is how the two implementations come apart. This
+    enumerates what the JS exports and requires each one to be either paired with a
+    Python function or explicitly declared page-only.
+    """
+    import re
+
+    src = ENGINE.read_text()
+    # everything above the PAGE-ONLY marker is a port and must be paired
+    ported_src = src.split("PAGE-ONLY, NO PYTHON COUNTERPART")[0]
+    exported = set(re.findall(r"^function (vm[A-Za-z0-9_]+)", ported_src, re.M))
+
+    # vmX -> the Python name it mirrors; helpers that exist only to make JS behave like
+    # Python (rounding, Counter, stable sort) are listed as such
+    PAIRS = {
+        "vmRound": None, "vmSet": None, "vmCount": None, "vmSumValues": None,
+        "vmMostCommon": None, "vmAccumulate": None, "vmWordsIn": None,
+        "vmSyllables": "_syllables", "vmTokenize": "tokenize", "vmHist": "_hist",
+        "vmYulesK": "yules_k", "vmMtld": "mtld", "vmOpenerClass": "_opener_class",
+        "vmCharNgramProfile": "char_ngram_profile",
+        "vmWordBigramProfile": "word_bigram_profile",
+        "vmFunctionWordBigramProfile": "function_word_bigram_profile",
+        "vmContentTerms": "content_terms", "vmTfidfVector": "tfidf_vector",
+        "vmCosine": "cosine", "vmFingerprint": "fingerprint",
+        "vmMeanStd": "_mean_std", "vmBaselineFromTexts": "baseline_from_texts",
+        # runtime version support, mirroring the package accessors
+        "vmVersion": "version", "vmVersionInfo": "version_info",
+        "vmSignature": "signature", "vmVersions": "versions",
+        "vmScalarSimilarity": "_scalar_similarity",
+        "vmHistSimilarity": "_hist_similarity", "vmScoreText": "score_text",
+    }
+    missing = exported - set(PAIRS)
+    assert not missing, (
+        f"ported JS functions with no declared Python counterpart: {sorted(missing)}. "
+        "Add the pair here (and a parity assertion), or move the function below the "
+        "PAGE-ONLY marker in pages/voicemetric.js.")
+
+    import revoice
+    from revoice import voicemetric as py_vm
+    from revoice.voicemetric import baseline as py_baseline
+    from revoice.voicemetric import features as py_features
+
+    sources = (py_features, py_baseline, py_vm, revoice)
+    for js_name, py_name in PAIRS.items():
+        if py_name is None:
+            continue
+        assert any(hasattr(src, py_name) for src in sources), (
+            f"{js_name} claims to mirror {py_name}, which no longer exists in Python")
+
+
+def test_the_stale_engine_is_gone():
+    """pages/stylometry.js was a third implementation of the composite. It is deleted,
+    and this keeps it deleted — reintroducing it would reintroduce the drift."""
+    assert not (ROOT / "pages" / "stylometry.js").exists()
+    # Check for LOADING it, not for mentioning it: the pages carry a comment explaining
+    # what the old engine was and why it went, and that history is worth keeping. (The
+    # blunt version of this assertion failed on its own explanation.)
+    for page in (ROOT / "pages").glob("*.html"):
+        assert 'src="stylometry.js"' not in page.read_text(), f"{page.name} still loads it"
+
+
+# ---------------------------------------------------------------------------------
+# The Markdown export.
+#
+# report.html has a "download Markdown" button; `revoice space --report out.md` writes
+# the same document. Two generators of one artefact is exactly the shape that produced
+# the stylometry.js drift, so it gets the same treatment: identical output, asserted.
+#
+# The reports themselves are computed ONCE in Python and handed to both sides, so this
+# isolates the formatting. Bootstrap intervals are allowed to differ between the two
+# implementations (Python seeds with random.Random, which node cannot reproduce), and
+# leaving that in would make this test about the PRNG rather than about the document.
+
+MD_SAMPLES = {
+    "Twain — held out": "narrative",
+    "Institutional prose": "institutional",
+}
+
+
+def _long(text: str, times: int = 26) -> str:
+    """Enough paragraphs to clear the three-window floor.
+
+    Below it a document gets no interval at all, `worst_overlap` returns None, and the
+    Markdown skips the overlap section entirely — so a short fixture would leave the most
+    important half of this document untested while the test still passed.
+    """
+    paras = [p for p in text.split("\n\n") if p.strip()]
+    return "\n\n".join(paras * times)
+
+
+def _reports_for_markdown():
+    from revoice.voicemetric.space import Population, VoiceRegion, similarity_report
+
+    pop = Population.fit(list(FIXTURES.values()))
+    region = VoiceRegion.fit("your reference",
+                             [FIXTURES["narrative"], FIXTURES["institutional"]], pop)
+    out = []
+    for name, key in MD_SAMPLES.items():
+        r = similarity_report(_long(FIXTURES[key]), region, pop)
+        assert r["interval_reliable"], f"{name} still has no interval"
+        out.append((name, f"/tmp/{name}.md", r))
+    return out
+
+
+@node
+def test_the_markdown_export_matches_the_cli_byte_for_byte():
+    from revoice.voicemetric import chart
+
+    items = _reports_for_markdown()
+    payload = [{"name": n, "report": r} for n, _s, r in items]
+    js = _run_node(f"""
+const items = {json.dumps(payload)};
+process.stdout.write(JSON.stringify(
+  {{md: vsMarkdownReport(items, 'your reference', 'voicemetric 9.9.9 (deadbeef)')}}));""")
+
+    py = chart.markdown(items, voice="your reference",
+                        engine="voicemetric 9.9.9 (deadbeef)")
+    assert js["md"] == py, (
+        "the page's Markdown export and `revoice space --report out.md` have diverged\n"
+        f"--- page ---\n{js['md'][:900]}\n--- cli ---\n{py[:900]}")
+
+
+@node
+def test_the_markdown_leads_with_the_overlap_not_the_ranking():
+    """The point of the document. A ranked table invites the order to be read as a
+    result; on this measure it usually is not one, so the overlap is stated in words
+    before any number is ranked."""
+    from revoice.voicemetric import chart
+
+    items = _reports_for_markdown()
+    md = chart.markdown(items, voice="v")
+    assert md.index("## What this says") < md.index("## Every reading on one scale")
+    assert "not evidence" in md or "do not overlap" in md
+    # every score carries its interval, in the table and in the per-sample sections
+    for _n, _s, r in items:
+        if r["interval_reliable"]:
+            assert f"{r['low']:.0f}–{r['high']:.0f}" in md
+
+
+def test_the_markdown_states_the_limits():
+    """A document that leaves the building must carry its own caveat. Someone will paste
+    this into a pull request and nobody there will have read docs/metrics.md."""
+    from revoice.voicemetric import chart
+
+    md = chart.markdown(_reports_for_markdown(), voice="v")
+    assert "not an authorship" in md.lower() or "not" in md and "authorship" in md
+    assert "AUC 0.67" in md
+    assert "register" in md
+
+
+def test_the_report_page_loads_the_engine_and_is_in_the_nav():
+    page = (ROOT / "pages" / "report.html").read_text()
+    for script in ("engine-constants.js", "voicemetric.js", "voicespace.js"):
+        assert f'src="{script}"' in page, f"report.html does not load {script}"
+    assert "'report.html'" in (ROOT / "pages" / "site.js").read_text(), "not in the nav"
+
+
+@node
+def test_the_browser_engine_reports_the_same_versions_as_the_package():
+    """The page must not be able to claim a version the package does not have.
+
+    This file is a PORT, so "which engine produced this number" is the question a
+    surprising result turns on — and the signature answers whether two results are
+    comparable at all, even when no version moved. All of it is generated from
+    `revoice.versions()`, and this is the assertion that it stayed generated.
+    """
+    import revoice
+
+    js = _run_node("process.stdout.write(JSON.stringify({"
+                   "versions: vmVersions(), version: vmVersion(), "
+                   "info: vmVersionInfo(), sig: vmSignature()}));")
+    assert js["versions"] == revoice.versions()
+    assert js["version"] == revoice.voicemetric.version()
+    assert js["info"] == list(revoice.voicemetric.version_info())
+    assert js["sig"] == revoice.voicemetric.signature()
+
+
+@node
+def test_the_pages_version_file_agrees_with_the_engine_constants():
+    """Two generated files carry versions; both come from the same call, and this is
+    what keeps that true rather than merely intended."""
+    import re
+
+    text = (ROOT / "pages" / "version.js").read_text()
+    m = re.search(r"var REVOICE_VERSION = (\{.*?\});", text, re.S)
+    assert m, "pages/version.js does not define REVOICE_VERSION"
+    page = json.loads(m.group(1))
+
+    js = _run_node("process.stdout.write(JSON.stringify(vmVersions()));")
+    for key in ("revoice", "voicemetric", "rubric"):
+        assert page[key] == js[key], f"{key}: version.js {page[key]} vs engine {js[key]}"

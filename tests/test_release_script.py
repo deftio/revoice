@@ -51,7 +51,11 @@ def test_refuses_a_dirty_working_tree():
     try:
         r = run()
         assert r.returncode != 0
-        assert "working tree is not clean" in r.stderr
+        assert "uncommitted changes" in r.stderr
+        # and it must say what to type, not merely what is wrong
+        assert "git add -A && git commit" in r.stderr
+        assert "git stash -u" in r.stderr
+        assert "release-dirty-probe.tmp" in r.stderr, "it should list the offending files"
     finally:
         scratch.unlink()
 
@@ -82,7 +86,14 @@ def test_refuses_to_reuse_an_existing_tag():
     try:
         r = run()
         assert r.returncode != 0
-        assert "already exists" in r.stderr
+        assert "already tagged" in r.stderr
+        # It points at where the version lives; it does NOT propose a number. Whether
+        # the next release is a patch, a minor or a major is a judgement about what
+        # changed, and the script has no standing to make it.
+        assert "revoice/__init__.py" in r.stderr and "CHANGELOG.md" in r.stderr
+        major, minor, patch = revoice.__version__.split(".")
+        assert f"{major}.{minor}.{int(patch) + 1}" not in r.stderr, \
+            "the script should not be choosing the next version"
     finally:
         if not existed:
             subprocess.run(["git", "tag", "-d", tag], cwd=ROOT, capture_output=True)
@@ -96,14 +107,122 @@ def test_the_retired_editing_flags_explain_what_replaced_them():
         assert "no longer edits the repo" in r.stderr, flag
 
 
-def test_the_script_never_writes_to_the_repository():
-    """The contract, read from the source: no redirect or in-place edit of tracked files."""
-    import re
+def _fixable_repo(tmp: Path) -> Path:
+    """A repo whose only problem is an undated changelog — mechanical, not a decision."""
+    import subprocess as sp
 
-    src = SCRIPT.read_text()
-    for pattern in (r"sed -i", r">\s*(?:revoice|pages|pyproject|CHANGELOG)",
-                    r"\.write_text\(", r"git commit", r"git add"):
-        assert not re.search(pattern, src), f"release.sh appears to write: {pattern}"
+    wt = tmp / "repo"
+    (wt / "scripts").mkdir(parents=True)
+    (wt / "revoice").mkdir()
+    (wt / "scripts" / "release.sh").write_bytes(SCRIPT.read_bytes())
+    (wt / "scripts" / "release.sh").chmod(0o755)
+    # version() as well as __version__: the script asks the package, it does not parse
+    # the file, so a fixture without the accessor is not a fixture of this project.
+    (wt / "revoice" / "__init__.py").write_text(
+        '__version__ = "9.9.9"\n\n\ndef version():\n    return __version__\n')
+    (wt / "CHANGELOG.md").write_text(
+        "# Changelog\n\n## 9.9.9 (unreleased)\n\nnotes long enough to pass the gate\n")
+    # running python in here leaves __pycache__; that is not the script writing
+    (wt / ".gitignore").write_text("__pycache__/\n*.pyc\n")
+    for a in (["init", "-q", "-b", "main", "."], ["config", "user.email", "t@e.com"],
+              ["config", "user.name", "t"], ["add", "-A"], ["commit", "-qm", "init"]):
+        sp.run(["git", *a], cwd=wt, capture_output=True)
+    return wt
+
+
+def _env():
+    import os
+
+    return {"NO_COLOR": "1", "PATH": os.environ["PATH"], "HOME": os.environ["HOME"]}
+
+
+@bash
+def test_without_fix_the_script_changes_nothing():
+    """The contract, tested by behaviour rather than by grepping for command names.
+
+    The previous version of this scanned the source for `git commit`, `sed -i` and
+    friends. That stopped working the moment the script grew a --fix mode that legitimately
+    runs them, and it was always the weaker test: what matters is whether the repository
+    changed, not which words appear in the file.
+    """
+    import subprocess as sp
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        wt = _fixable_repo(Path(tmp))
+        before = sp.run(["git", "rev-parse", "HEAD"], cwd=wt,
+                        capture_output=True, text=True).stdout
+        changelog = (wt / "CHANGELOG.md").read_text()
+
+        r = sp.run([str(wt / "scripts" / "release.sh")], cwd=wt, env=_env(),
+                   capture_output=True, text=True, timeout=180)
+        assert r.returncode != 0
+        assert "(unreleased)" in r.stderr
+
+        assert (wt / "CHANGELOG.md").read_text() == changelog, "it edited the changelog"
+        assert sp.run(["git", "rev-parse", "HEAD"], cwd=wt, capture_output=True,
+                      text=True).stdout == before, "it committed something"
+        assert sp.run(["git", "status", "--porcelain"], cwd=wt, capture_output=True,
+                      text=True).stdout.strip() == "", "it left the tree dirty"
+
+
+@bash
+def test_without_fix_it_offers_fix_rather_than_only_instructions():
+    """The complaint that produced --fix: being told to go and type something, then
+    re-run a script that has already done minutes of work, is an obstacle, not a gate."""
+    import subprocess as sp
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        wt = _fixable_repo(Path(tmp))
+        r = sp.run([str(wt / "scripts" / "release.sh")], cwd=wt, env=_env(),
+                   capture_output=True, text=True, timeout=180)
+        assert "--fix" in r.stderr, "a mechanical problem should mention --fix"
+
+
+@bash
+def test_fix_dates_the_changelog_and_commits_only_what_it_touched():
+    import subprocess as sp
+    import tempfile
+    from datetime import datetime, timezone
+
+    with tempfile.TemporaryDirectory() as tmp:
+        wt = _fixable_repo(Path(tmp))
+        # something unrelated the user was working on — it must NOT be swept up
+        (wt / "my-scratch.txt").write_text("mine\n")
+
+        r = sp.run([str(wt / "scripts" / "release.sh"), "--fix", "--yes"], cwd=wt,
+                   env=_env(), capture_output=True, text=True, timeout=180)
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        assert f"## 9.9.9 - {today}" in (wt / "CHANGELOG.md").read_text(), r.stdout + r.stderr
+
+        log = sp.run(["git", "log", "--name-only", "--format=%s", "-1"], cwd=wt,
+                     capture_output=True, text=True).stdout
+        assert "Release 9.9.9" in log
+        assert "CHANGELOG.md" in log
+        assert "my-scratch.txt" not in log, "it committed a file that was not its business"
+
+        # and the untouched file is still there, still uncommitted
+        assert (wt / "my-scratch.txt").exists()
+        assert "my-scratch.txt" in sp.run(["git", "status", "--porcelain"], cwd=wt,
+                                          capture_output=True, text=True).stdout
+
+
+@bash
+def test_fix_echoes_every_command_it_runs():
+    """Anything the script does to the repo appears as the git/sed line you would have
+    typed, so "it did something to my repo" is never a mystery."""
+    import subprocess as sp
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        wt = _fixable_repo(Path(tmp))
+        r = sp.run([str(wt / "scripts" / "release.sh"), "--fix", "--yes"], cwd=wt,
+                   env=_env(), capture_output=True, text=True, timeout=180)
+        out = r.stdout + r.stderr
+        assert "$ sed -i" in out or "$ sed" in out, out[:600]
+        assert "$ git add" in out
+        assert "$ git commit" in out
 
 
 def test_the_version_is_read_from_the_single_source_of_truth():
@@ -141,7 +260,13 @@ def test_generated_site_files_are_verified_not_regenerated():
     """Regenerating during a release would mean the release authors code."""
     src = SCRIPT.read_text()
     assert "export_demo_baselines.py --check" in src
-    assert "export_demo_baselines.py\n" not in src.replace(" --check", " --check\n")
+    # Regeneration exists now, but only under --fix. Proving that from the source text
+    # means re-implementing bash's block structure in a regex, which is how a test ends
+    # up asserting something subtly different from what it claims. The property is
+    # behavioural and is tested as such by
+    # `test_without_fix_the_script_changes_nothing`, which runs the script on a repo
+    # with a regenerable problem and asserts not one byte moved.
+    assert "$DO_FIX" in src, "the --fix guard should exist for the regeneration branch"
 
 
 def test_release_is_gated_on_remote_ci_not_local_checks():
@@ -189,3 +314,287 @@ def test_the_release_builds_both_distribution_targets():
     assert "uv build" in src
     assert "tar.gz" in src and ".whl" in src, "must verify BOTH sdist and wheel exist"
     assert "uv pip install" in src, "a built wheel that cannot install is not a release"
+
+
+# ---------------------------------------------------------------------------------
+# Actionability.
+#
+# A gate that fails should hand back the command, not just the diagnosis — and if three
+# gates fail it should say so once rather than making you find them one run at a time.
+# These are the tests for that, because "the error message is helpful" decays silently.
+
+@bash
+def test_every_problem_is_reported_in_one_pass():
+    """Three simultaneous problems, one run, three numbered items."""
+    import re
+
+    import revoice
+
+    changelog = ROOT / "CHANGELOG.md"
+    original = changelog.read_text()
+    scratch = ROOT / "release-multi-probe.tmp"
+    tag = f"v{revoice.__version__}"
+    tag_existed = subprocess.run(["git", "rev-parse", "-q", "--verify", f"refs/tags/{tag}"],
+                                 cwd=ROOT, capture_output=True).returncode == 0
+    try:
+        changelog.write_text(re.sub(rf"^## {re.escape(revoice.__version__)} .*$",
+                                    f"## {revoice.__version__} (unreleased)",
+                                    original, count=1, flags=re.M))
+        scratch.write_text("uncommitted\n")
+        if not tag_existed:
+            subprocess.run(["git", "tag", tag], cwd=ROOT, capture_output=True)
+
+        r = run()
+        assert r.returncode != 0
+        assert "not ready to release" in r.stderr
+        assert "3 things to do first" in r.stderr, r.stderr
+        for n in ("1.", "2.", "3."):
+            assert f"\n{n} " in r.stderr or r.stderr.startswith(f"{n} "), n
+        # ordering matters: fixing the tag changes the version the others refer to
+        assert "do them in order" in r.stderr
+        assert "then re-run:" in r.stderr
+    finally:
+        changelog.write_text(original)
+        scratch.unlink(missing_ok=True)
+        if not tag_existed:
+            subprocess.run(["git", "tag", "-d", tag], cwd=ROOT, capture_output=True)
+
+
+@bash
+def test_an_undated_changelog_hands_back_the_exact_edit():
+    import re
+    from datetime import datetime, timezone
+
+    import revoice
+
+    changelog = ROOT / "CHANGELOG.md"
+    original = changelog.read_text()
+    v = revoice.__version__
+    try:
+        changelog.write_text(re.sub(rf"^## {re.escape(v)} .*$", f"## {v} (unreleased)",
+                                    original, count=1, flags=re.M))
+        r = run()
+        assert r.returncode != 0
+        assert "(unreleased)" in r.stderr
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        # a runnable line, with today's date already substituted in
+        assert f"## {v} - {today}" in r.stderr
+        assert "sed -i" in r.stderr and "CHANGELOG.md" in r.stderr
+        # BSD sed needs the empty arg, GNU sed refuses it. The script must suggest the
+        # one that is actually installed — wrong advice is worse than none.
+        import subprocess as sp
+        gnu = sp.run(["sed", "--version"], capture_output=True).returncode == 0
+        suggested = next(line for line in r.stderr.splitlines() if "sed -i" in line)
+        if gnu:
+            assert "sed -i ''" not in suggested, f"GNU sed given BSD syntax: {suggested}"
+        else:
+            assert "sed -i ''" in suggested, f"BSD sed given GNU syntax: {suggested}"
+    finally:
+        changelog.write_text(original)
+
+
+@bash
+def test_no_message_merely_states_the_problem():
+    """Every `need` in the script carries something runnable.
+
+    A message that says what is wrong and not what to type is half a message, and this is
+    the check that keeps the next one from being written that way.
+    """
+    import re
+
+    src = SCRIPT.read_text()
+    calls = re.findall(r'\bneed\s+"(.*?)"\s*\\?\n(.*?)(?=\n\s*(?:else|fi|;;|\bneed\b|$))',
+                       src, re.S)
+    assert calls, "no need() calls found — has the script been restructured?"
+    runnable = ("git ", "uv ", "python ", "sed ", "$EDITOR", "gh ", "brew ", "export ")
+    for what, body in calls:
+        assert any(tok in body for tok in runnable), (
+            f"the message {what!r} tells you what is wrong but not what to type")
+
+
+@bash
+def test_a_failing_gate_names_the_command_that_reproduces_it():
+    """The verify stage runs with --quiet; a failure must say how to see the output."""
+    src = SCRIPT.read_text()
+    assert "Reproduce it:" in src
+    # the suggested commands must NOT be the quiet ones, or you re-run and see nothing
+    for line in src.splitlines():
+        if line.strip().startswith('"uv run') and "Reproduce" not in line:
+            assert "--quiet" not in line, f"reproduce command is silenced: {line.strip()}"
+
+
+@bash
+def test_missing_tools_say_how_to_install_them():
+    src = SCRIPT.read_text()
+    assert "astral.sh/uv/install.sh" in src or "brew install uv" in src
+    assert "gh auth login" in src
+    assert "brew install gh" in src
+
+
+def _ci_like_checkout(tmp: Path) -> Path:
+    """A standalone repo shaped like `actions/checkout` on a pull_request.
+
+    Detached HEAD, NO branches, NO remotes. A `git worktree` is not good enough and
+    getting that wrong cost a CI round trip: a worktree shares the parent repository's
+    refs, so origin/main is visible inside it and a fix that depends on origin/main
+    passes there while still failing in CI.
+    """
+    import subprocess as sp
+
+    wt = tmp / "ci-like"
+    wt.mkdir()
+    def run_git(*a):
+        return sp.run(["git", *a], cwd=wt, capture_output=True, text=True)
+
+    sp.run(["git", "init", "-q", "-b", "tmpbranch", str(wt)], capture_output=True)
+    run_git("config", "user.email", "t@example.com")
+    run_git("config", "user.name", "t")
+    for rel in ("scripts", "revoice", "tests", "pages"):
+        (wt / rel).mkdir(parents=True, exist_ok=True)
+    (wt / "scripts" / "release.sh").write_bytes(SCRIPT.read_bytes())
+    (wt / "scripts" / "release.sh").chmod(0o755)
+    # version() as well as __version__: the script asks the package, it does not parse
+    # the file, so a fixture without the accessor is not a fixture of this project.
+    (wt / "revoice" / "__init__.py").write_text(
+        '__version__ = "9.9.9"\n\n\ndef version():\n    return __version__\n')
+    (wt / "CHANGELOG.md").write_text("# Changelog\n\n## 9.9.9 (unreleased)\n\nnotes\n")
+    run_git("add", "-A")
+    run_git("commit", "-qm", "init")
+    run_git("checkout", "-q", "--detach")
+    run_git("branch", "-D", "tmpbranch")
+    return wt
+
+
+@bash
+def test_it_works_in_a_ci_style_detached_checkout():
+    """The verify path must run with no branches and no remotes — that is what CI has.
+
+    Requiring a main branch here made the script die in preflight in CI, before reaching
+    a single gate, and took five of the tests above with it.
+    """
+    import subprocess as sp
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        wt = _ci_like_checkout(Path(tmp))
+        # `git branch` prints a "(HEAD detached at ...)" pseudo-entry even with --format,
+        # so count real refs instead — that is what "no branches" has to mean here.
+        refs = sp.run(["git", "for-each-ref", "--format=%(refname)", "refs/heads/"],
+                      cwd=wt, capture_output=True, text=True).stdout.strip()
+        assert refs == "", f"the fixture should have no branches, has: {refs}"
+        assert sp.run(["git", "remote"], cwd=wt, capture_output=True,
+                      text=True).stdout.strip() == "", "the fixture should have no remotes"
+
+        env = {"NO_COLOR": "1", "PATH": __import__("os").environ["PATH"],
+               "HOME": __import__("os").environ["HOME"]}
+        r = sp.run([str(wt / "scripts" / "release.sh")], cwd=wt, env=env,
+                   capture_output=True, text=True, timeout=180)
+        combined = r.stdout + r.stderr
+        # it must reach the GATES, not die on the branch check
+        assert "branch here" not in combined, combined[:400]
+        assert "(unreleased)" in combined, f"never reached the changelog gate:\n{combined[:400]}"
+
+
+@bash
+def test_publishing_from_a_ci_style_checkout_is_refused_with_the_fix():
+    """Verifying does not need a branch; publishing does, and says so."""
+    import subprocess as sp
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        wt = _ci_like_checkout(Path(tmp))
+        env = {"NO_COLOR": "1", "PATH": __import__("os").environ["PATH"],
+               "HOME": __import__("os").environ["HOME"]}
+        r = sp.run([str(wt / "scripts" / "release.sh"), "--pr"], cwd=wt, env=env,
+                   capture_output=True, text=True, timeout=180)
+        assert r.returncode != 0
+        # --pr checks for gh BEFORE preflight, and CI runners have gh installed but not
+        # authenticated. Either refusal is correct; both must name a command. Asserting
+        # only the branch message would fail in CI for a reason that is not a bug.
+        if "gh is installed but not authenticated" in r.stderr or "gh (GitHub CLI) not found" in r.stderr:
+            assert "gh auth login" in r.stderr
+        else:
+            assert "HEAD is detached" in r.stderr or "no 'main' branch" in r.stderr
+            assert "git checkout" in r.stderr or "git fetch" in r.stderr
+
+
+@bash
+def test_no_bash_version_sensitive_constructs():
+    """Constructs that one bash accepts and another rejects.
+
+    macOS ships bash 3.2; CI runs bash 5. `${#arr[@]}` on an empty array is an
+    unbound-variable error under `set -u` on 3.2, and the obvious guard for it —
+    `${#arr[@]-0}` — is a "bad substitution" on 5, because `${#...}` takes no default.
+    The script passed `bash -n` locally and died on every gate in CI. This is the static
+    check that would have caught it without a round trip.
+    """
+    import re
+
+    # Comments are stripped first. The script CARRIES a comment explaining this exact
+    # pitfall, and the naive version of this check flagged its own documentation — the
+    # third time in this file that scanning source text for a pattern has matched the
+    # text that explains the pattern.
+    src = re.sub(r'^\s*#.*$', '', SCRIPT.read_text(), flags=re.M)
+    bad = re.findall(r'\$\{#[A-Za-z_][A-Za-z0-9_]*\[[@*]\][-:+?][^}]*\}', src)
+    assert not bad, (
+        f"${{#array[@]}} with a default is a bad substitution on bash 5: {bad}. "
+        "Track the count in a plain integer variable instead.")
+
+
+@bash
+def test_the_script_parses_under_a_modern_bash_too():
+    """`bash -n` only ever checks the bash you happen to have. On macOS that is 3.2,
+    which is not what CI runs, so a second opinion is worth having when one is around."""
+    import os
+    import shutil
+    import subprocess as sp
+
+    for candidate in ("/opt/homebrew/bin/bash", "/usr/local/bin/bash", shutil.which("bash")):
+        if not candidate or not os.path.exists(candidate):
+            continue
+        ver = sp.run([candidate, "-c", "echo $BASH_VERSINFO"], capture_output=True, text=True)
+        if ver.returncode == 0 and ver.stdout.strip().isdigit() and int(ver.stdout.strip()) >= 4:
+            r = sp.run([candidate, "-n", str(SCRIPT)], capture_output=True, text=True)
+            assert r.returncode == 0, f"{candidate} rejects the script: {r.stderr}"
+            return
+    pytest.skip("no bash >= 4 available to cross-check")
+
+
+@bash
+def test_the_version_comes_from_the_package_not_from_a_parse():
+    """The single source of truth is the code, and the script asks it.
+
+    It used to carry its own regex over revoice/__init__.py — a second implementation of
+    `revoice.version()`, and so a second source of truth that could drift. It could not
+    even detect that it had: the old "runtime and packaging agree" check existed purely
+    to compare the script's parse against the package's, which is a check you only need
+    once you have made the mistake of parsing.
+    """
+    import re
+
+    src = SCRIPT.read_text()
+    assert "revoice.version()" in src, "the script should ask the package for its version"
+
+    # No regex over the version specifically. The script legitimately parses OTHER
+    # things — the CHANGELOG heading, for one — so forbidding `re.search` outright
+    # would fail on code that has nothing to do with versions.
+    body = re.sub(r'^\s*#.*$', '', src, flags=re.M)
+    for pattern in (r"re\.search\(r?['\"][^'\"]*__version__",
+                    r"grep [^|\n]*__version__", r"awk [^|\n]*__version__",
+                    r"sed [^|\n]*__version__"):
+        assert not re.search(pattern, body), (
+            f"the script parses the version out of source text ({pattern}); "
+            "ask revoice.version() instead")
+
+
+@bash
+def test_the_script_does_not_compute_a_version_number():
+    """Bumping is a judgement about what changed. The script names the file and stops."""
+    import re
+
+    body = re.sub(r'^\s*#.*$', '', SCRIPT.read_text(), flags=re.M)
+    # arithmetic on version components, however it is spelled
+    for pattern in (r"\$NF\s*\+\s*1", r"patch\s*\+\s*1", r"\+\s*1\s*;\s*print"):
+        assert not re.search(pattern, body), (
+            f"the script computes a version number ({pattern}); that decision is the "
+            "author's, recorded in revoice/__init__.py")

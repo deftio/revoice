@@ -105,6 +105,14 @@ hides a 14-point confidence interval is worse than no estimate, because it invit
 decision the measurement cannot support. Where a text is too short to bootstrap, the
 report says so rather than drawing a band it cannot justify.
 
+That commitment is only worth the interval's coverage, so `bench.interval_coverage`
+measures it. On 841 documents: the interval on a **difference** — the one `style_delta`
+and the `moved` verdict rest on — contains the truth **91.6%** of the time at nominal 90%.
+The interval on an **absolute level** is right at the median and thin in the tails, with a
+nominal 95% behaving like 86% and misses running 2.8:1 *above* the band, so its upper edge
+is not a bound to lean on. Both numbers are in §1i of `docs/metrics.md`, with the second
+unfixed on purpose: BCa is the remedy and it would move every interval already published.
+
 A third, which is a constraint rather than a principle: **it has to run in a browser.**
 The compare page is served off GitHub Pages with no server to ask, so everything here is
 stdlib Python written to port one-to-one into `pages/voicespace.js`. That rules out

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.10 (unreleased)
+## 0.1.10 - 2026-09-14
 
 **Better metrics, under a hard constraint: everything here runs in a browser.**
 
@@ -60,6 +60,309 @@ More uncomfortably, `vocab` — the component held out of the voice score *by co
 because it measures subject matter — is better calibrated about its own reliability than
 the voice composite is, at every length. That argues for calibration work (§6), not for
 putting it back in the score.
+
+### Fixed — `release.sh` died in CI, which is the one place it has to work
+`actions/checkout` on a `pull_request` fetches only `refs/pull/N/merge` at depth 1: the
+checkout is a detached HEAD with **no branches and no remote-tracking refs**. The script
+required a local `main`, so in CI it died in preflight before reaching a single gate, and
+took five of its own tests down with it. The release PR going red is how this surfaced.
+
+The main branch is only needed to *publish* — it is the PR base. Verifying does not need
+it, and now does not ask for it. Publishing from a detached HEAD is refused with the
+checkout command.
+
+**It took two attempts, for a reason worth recording.** The first fix accepted
+`origin/main` as a fallback and was verified against a `git worktree` — which shares the
+parent repository's refs, so `origin/main` was present and the reproduction passed while
+CI kept failing. A worktree is not a fresh clone. The regression test now builds a
+standalone repository with no branches and no remotes, which is what CI actually hands
+you, and asserts the script reaches the gates rather than dying before them.
+
+That fixture immediately found a second bug it had been hiding: `VAR=$(cmd)` under
+`set -e` exits the script when `cmd` fails, so the branch added to *handle* a failing
+check could never run — the script died with the raw exit status and printed nothing.
+Both captures now suspend errexit and inspect the status themselves.
+
+### Fixed — a construct bash 3.2 accepts and bash 5 rejects
+`${#arr[@]}` on an empty array is an unbound-variable error under `set -u` on bash 3.2,
+which is what macOS ships. The obvious guard, `${#arr[@]-0}`, is a **bad substitution**
+on bash 5, which is what CI runs — `${#...}` takes no default. The script passed
+`bash -n` locally and then died on the first line of its own reporting helper in CI,
+taking every gate with it. The count is now a plain integer, correct on both.
+
+Guarded two ways: a static check that forbids `${#array[@]}` with a default, and a
+cross-check with any bash ≥ 4 on the machine, since `bash -n` only ever validates the
+bash you happen to have. Verified by running the whole script under `bash:5` in a
+container against a simulated CI checkout — detached HEAD, no branches, dirty tree,
+existing tag, undated changelog — and confirming all three problems report correctly.
+
+(The static check needed fixing too: its first version flagged the comment in the script
+that documents this very pitfall. That is the third time this session a source-text scan
+has matched the text explaining the thing it scans for.)
+
+### Fixed — generated-file staleness could not be told apart from "cannot check here"
+`bench-corpus/` is fetched data and gitignored, so a fresh clone does not have it and
+`export_demo_baselines.py` silently falls back to `examples/voices` — 4 voices instead of
+1,594 documents. `--check` then reported the committed `population.json` as **stale**,
+and following its advice would have regenerated it from the fallback and committed a
+materially different file. It now compares the source recorded in the file against what
+the checkout actually has, exits 2 for "cannot verify here", and tells you to fetch the
+corpus rather than to overwrite the file.
+
+
+A GitHub Actions `pull_request` checkout is a **detached HEAD** at `refs/pull/N/merge`
+with no local branches. The script required a local `main` to exist, so in CI it died in
+preflight before reaching a single gate — and took five of its own tests down with it,
+which is how this was found: the release PR's CI run went red.
+
+The branch is now accepted as `main` *or* `origin/main`, and a detached HEAD is fine for
+verifying. Only publishing needs a branch, and asking to publish from a detached HEAD is
+refused with the checkout command. A regression test builds a real detached worktree and
+drives the script through it.
+
+### Fixed — `release.sh` ran CI's gates in an environment CI does not use
+The test gate claimed to run "the same gates CI runs" while running them somewhere
+else. `.github/workflows/ci.yml` does `uv sync --all-extras` and installs the test
+tools first; the script did neither, so `tests/test_core_extra.py` exercised
+`.docx`/`.pptx`/`.pdf` extraction with those libraries absent and failed three times for
+a reason that had nothing to do with the release. The script now prepares the same
+environment before testing.
+
+That is not a breach of the read-only contract. The contract is about what gets
+**committed and shipped** — no version bumps, no changelog edits, no regenerated site
+data. `.venv/` is gitignored and is not part of what ships, and refusing to prepare it
+meant the local gates quietly tested something other than what CI tests, which is the
+exact failure the contract exists to prevent.
+
+Also: the undated-changelog message suggested `sed -i ''`, which is correct on BSD and
+broken on GNU. Suggesting a command that fails is worse than suggesting none, so the
+script detects which `sed` is installed and emits that one.
+
+### Added — runtime version support, on every package and the browser engine
+Every package in this family reports its own version at runtime, in a form you print and
+a form you compare — `bw.version` / `bw.versionInfo` / `bw.getVersion()`, or
+`FR_MATH_VERSION` beside a packed `FR_MATH_VERSION_HEX`. revoice had only the string, on
+three packages that move independently, with no way to ask for all of them at once.
+
+```python
+revoice.version()            # "0.1.10"        to print
+revoice.version_info()       # (0, 1, 10)      to compare
+revoice.versions()           # every component, one call
+revoice.voicemetric.version_info()   # and on each sub-package
+revoice.rubric.version_info()
+```
+
+```bash
+revoice --version     # revoice 0.1.10
+revoice --versions    # the tool, both engines, and the engine signature
+```
+
+**The tuple is not a style preference.** `"0.1.10" < "0.1.9"` is *true* as strings, and
+that is exactly the range revoice is in — the bug arrives on the tenth patch of any
+minor. A test asserts both halves of that so the reason cannot be forgotten.
+
+`versions()` carries the **signature** as well as the versions, because the signature
+changes when the scoring configuration changes *without* the version moving — 0.5.0
+shipped with 0.4.0's signature deliberately — so versions alone cannot tell you whether
+two results are comparable. That set is what a bug report should carry, and `doctor`
+and `--versions` both read it rather than assembling their own.
+
+The browser engine reports itself too: `vmVersion()`, `vmVersionInfo()`, `vmSignature()`
+and `vmVersions()`. It matters more there than anywhere, because that file is a *port* —
+"which engine produced this number" is the question a surprising result turns on. The
+values are generated from `revoice.versions()` into `engine-constants.js`, so the page
+cannot claim a version the package does not have, and a parity test asserts it.
+
+### Changed — the release version comes from the code, not from a parse
+`release.sh` carried its own regex over `revoice/__init__.py` — a second implementation
+of `revoice.version()`, and therefore a second source of truth that could drift. It
+could not even detect that it had: the old "runtime and packaging agree" check existed
+purely to compare the script's parse against the package's, which is a check you only
+need once you have made the mistake of parsing. The script now asks
+`revoice.version()`, and that check is gone.
+
+It also no longer computes a suggested next version. Whether the next release is a
+patch, a minor or a major is a judgement about what changed; the script names the file
+where that decision is recorded and gets out of the way.
+
+### Changed — `release.sh` does the mechanical work instead of assigning it
+The script refused `--release` with *"no 'main' branch here … Fetch it: `git fetch origin
+main:main`"* — telling you to type a command it could have run, after several minutes of
+building and testing, and then asking you to start again. That is not a gate, it is an
+obstacle, and it is the opposite of walking someone through a release.
+
+The distinction the script now draws is **decision vs work**:
+
+- **Decisions stop it.** What version this is. What the release notes say. Whether the
+  tests pass. Whether to publish. Nobody else can settle those.
+- **Work it does**, echoing each command as `$ git branch main origin/main` so nothing
+  it touches is a mystery. A missing local branch that exists on origin is one fetch.
+
+`--fix` extends that to the two repairs that were previously homework: dating the
+CHANGELOG heading (the date is today; there is nothing to choose) and regenerating the
+derived site data. It commits **only the files it touched** — anything else you had open
+stays yours, and is reported rather than swept into the commit. Writing the notes is
+still a decision, so an empty section still stops the script.
+
+Default behaviour is unchanged: without `--fix` nothing in the repository is written.
+That contract used to be tested by grepping the source for `git commit` and `sed -i`,
+which stopped meaning anything once a `--fix` mode legitimately ran them. It is now
+tested by running the script against a repo with a repairable problem and asserting not
+one byte moved — which is what the contract always actually said.
+
+### Changed — `release.sh` now tells you what to type
+Every gate that can refuse a release hands back the command that fixes it, and the
+repo-state gates are collected so three problems take one run instead of three:
+
+```
+not ready to release — 3 thing(s) to do first:
+
+1. v0.1.10 is already tagged — this version has shipped
+       Bump to the next version and write its notes:
+         $EDITOR revoice/__init__.py      # __version__ = "0.1.11"
+         $EDITOR CHANGELOG.md             # add a '## 0.1.11 - 2026-09-15' section
+         python scripts/export_demo_baselines.py
+         git commit -am "Release 0.1.11"
+
+2. the working tree has uncommitted changes (CI can only test what is committed)
+          M CHANGELOG.md
+         ?? scratch.tmp
+       Commit them:
+         git add -A && git commit -m "Release 0.1.10"
+       or set them aside:
+         git stash -u
+
+3. CHANGELOG.md still marks 0.1.10 as (unreleased)
+       Date the heading:
+         sed -i '' 's/^## 0.1.10 (unreleased)$/## 0.1.10 - 2026-09-15/' CHANGELOG.md
+         git commit -am "Release 0.1.10"
+
+do them in order — a later step can depend on an earlier one.
+then re-run: ./scripts/release.sh
+```
+
+The next version number is computed, today's date is substituted in, and the BSD/GNU
+`sed -i` difference is noted, because that one bites everybody once. Missing tools give
+their install line; `gh` unauthenticated gives `gh auth login`.
+
+Test and build failures stay one at a time — those are not fixed by typing a command,
+and running the rest of the suite after the first failure buries the output you need.
+What each gives you is the **un-quieted** command that reproduces it, since the script
+runs them with `--quiet` and re-running the same silenced command shows nothing.
+
+Three tests keep this honest: one asserts three simultaneous problems produce three
+numbered items in one pass, one asserts the undated-changelog message contains a
+runnable `sed` line with today's date already in it, and one parses every `need` call in
+the script and fails if any message states a problem without offering something to type.
+
+One knock-on: the read-only guard scanned the source for `git commit`, `sed -i` and
+friends, and the new messages legitimately contain those as *text to show the user*. It
+now strips double-quoted spans before scanning — an instruction is quoted, a real write
+would not be — with a companion test proving the strip has not defanged it.
+
+### Added — `pages/report.html`, and a Markdown export
+The browser twin of `revoice space --report`. compare.html answers *did this text drift
+from that one*; this answers *of these several samples, which sit closest to this voice,
+and is that ordering worth anything*.
+
+The second half of that question is the design. A ranked list invites the order to be
+read as the result, and on this measure the order is very often noise — two samples can
+differ by 9 points and share 14 points of interval. So the page draws every reading and
+its interval on one scale, states the worst overlap **in words** before anything is
+ranked, and only then shows the axes. The verdict is plain: *"The ranking above is not
+evidence. Hand this page a different few pages of the same documents and the order could
+flip."*
+
+**Markdown export**, by download or copy, and `revoice space --report out.md` writes the
+same document — the suffix picks the format. It is not a transcription of the HTML: the
+page can *draw* an interval and plain text cannot, so the Markdown leads with the overlap
+in words, repeats the interval in every table row so no number ever appears without one,
+and carries its own limits section, because someone will paste it into a pull request
+where nobody has read `docs/metrics.md`.
+
+`tests/test_pages_parity.py` asserts the page's export and the CLI's output are identical
+strings. That caught two things the eye would not: an exactly-touching pair of intervals
+reported as *"clear by −0.0 points"* — nonsense in both implementations, and formatted
+differently by each, since Python prints negative zero and JavaScript's `toFixed` does not
+— and a straight apostrophe against a curly one. The first is now a third case with its
+own wording.
+
+### Changed — one engine, not three
+The browser had its own stylometry and it had drifted badly. `pages/stylometry.js` began
+as "a JS port of the demo subset"; Python was then refitted three times and grew six
+components; nothing compared them. `scripts/export_demo_baselines.py` carried a *third*
+copy, under a docstring that said "keep the weights in sync". They were not in sync:
+
+| | Python (fitted) | page (hand-typed) |
+|---|---|---|
+| components | 10 | 4 |
+| `ngram` | 0.181 | **0.600** |
+| `punct` | 0.332 | 0.100 |
+| `rhythm` | **0.000** (measured as noise) | 0.100 |
+| `richness`, `structure` | 0.104, 0.064 | absent |
+
+Measured on 112 trials across 28 authors: Python **AUC 0.793**, the page **0.688**, and
+the sigma the page led with **0.662**. On one case it inverted outright — it ranked
+Twain's own other work as *less* like Twain than Bret Harte.
+
+Now there is one engine. **`pages/voicemetric.js`** is a full port of `features.py` +
+`baseline.py` and agrees with the Python composite on **112 of 112 trials**, AUC 0.793 to
+0.793. `stylometry.js` is deleted; `export_demo_baselines.py` calls the real
+`baseline_from_texts` / `score_text`.
+
+**What keeps it ported**, since asking people to remember plainly did not:
+
+- **Data is generated.** `pages/engine-constants.js` is written out of Python by
+  `export_demo_baselines.py` — every word list, bin edge, weight, axis, punctuation set.
+  `voicespace.js` was migrated onto it too, so nothing on either side is hand-typed data.
+  A generated constant cannot be edited into disagreement, and hand-copied data is what
+  actually drifted.
+- **Algorithms are tested.** `tests/test_pages_parity.py` runs the real JavaScript under
+  node against the real Python on corpus fixtures: all 29 fingerprint fields, the
+  composite, all ten components, the weights, every generated constant, and a staleness
+  check that regenerating is a no-op.
+- **New code cannot skip the net.** `test_every_ported_function_has_a_python_counterpart_under_test`
+  enumerates the JS exports and fails on any that is neither paired with a Python
+  function nor declared page-only below an explicit marker.
+
+Agreement is to a stated tolerance per family, not bit-exact. The residual is rounding —
+Python breaks exact ties to even, JavaScript away from zero, and `fingerprint()` rounds
+~25 values, so a ratio like 1/32 differs in the fourth place. Emulating that costs real
+complexity in the hot path and is invisible against a composite reported to one decimal.
+A *missing component or a wrong weight* moves a composite by whole points, and that is
+what the tolerances forbid.
+
+`pages/compare.html` now shows all ten components with the weight each carries, so a
+family the bench fitted to zero reads as `0.000 · noise` rather than being quietly
+dropped, and the "biggest movement" line ignores families that carry no weight.
+
+### Added — `bench.interval_coverage`, which tests the part we trusted most
+Every report here leads with a confidence interval, and this project's whole argument for
+them is that a bare number invites a decision it cannot support. That argument is worth
+exactly as much as the interval's coverage, and coverage had never been measured. It is
+now, on 841 documents:
+
+- **On differences — calibrated.** Split a document's windows into halves whose true
+  difference is zero by construction, bootstrap that difference the way `style_delta`
+  does, and the 90% interval contains zero **91.6%** of the time (95% → 95.8%). The
+  construction behind the rail, the `moved` verdict and `rewrite-score` holds up.
+- **On absolute levels — thin-tailed.** Error is ~0 at the median and grows with the
+  level: a nominal 95% interval behaves like **86%**. Misses are one-sided, **205 above
+  the band against 74 below**, so the *upper* edge of a similarity interval is not a bound
+  to lean on. "This is clearly not a match" is the claim to distrust first.
+- **Cllr_cal is ~0.007** — essentially none of the Cllr cost is miscalibration. The scores
+  are well-calibrated statements of near-ignorance, which is the good version of a bad
+  number. It also means the whole prize is in discrimination, not calibration.
+
+Not fixed: BCa would be the standard remedy for the skew, and applying it moves every
+published interval. The finding goes in the record first.
+
+Writing the test wrong was itself instructive. The intuitive version — build the interval
+from half A, check whether half B's reading lands in it — is **pessimistic by √2**,
+because A's band carries A's noise while B's point carries its own. A perfectly calibrated
+90% interval scores 0.755 on it. The first run looked like a 19-point overconfidence
+scandal and was mostly test geometry; `_normal_pair_expectation` now prints the corrected
+benchmark beside the observed number so nobody repeats the mistake.
 
 ### Fixed — a claim this package made about itself
 `yules_k` asserted, in its own docstring and with no source, that Yule's K "does NOT

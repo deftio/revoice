@@ -119,6 +119,18 @@ bw.injectCSS(bw.css({
   '.rv_fam span': { color: P.light.darkText },
   '.rv_fam_bad': { borderColor: P.danger.base, color: P.danger.base },
   '.rv_fam_bad span': { color: P.danger.base },
+  /* the multi-sample report page */
+  '.rv_samples': { display: 'flex', flexDirection: 'column', gap: '0.8em' },
+  '.rv_samplehead': { display: 'flex', gap: '0.6em', alignItems: 'center',
+                      marginBottom: '0.55em' },
+  '.rv_samplehead input': { flex: '1 1 auto', minWidth: '0' },
+  '.rv_exportbar': { display: 'flex', gap: '0.6em', alignItems: 'center',
+                     flexWrap: 'wrap', margin: '1em 0' },
+  '.rv_lede': { color: P.light.darkText, maxWidth: '68ch', margin: '0 0 0.9em 0' },
+  '.rv_mdsource': { background: P.surfaceAlt, border: '1px solid ' + P.light.border,
+                    borderRadius: L.radius.card, padding: '1em', overflowX: 'auto',
+                    fontSize: '0.78em', lineHeight: '1.5', whiteSpace: 'pre',
+                    maxHeight: '22em' },
   '.rv_wrap': { maxWidth: '1280px', margin: '0 auto', padding: '0 3rem' },
   '.rv_hero': { padding: '1.3em 0 0 0' },
 
@@ -175,6 +187,7 @@ var NAV = [
   ['background.html', 'Background'],
   ['demo.html', 'Demo'],
   ['compare.html', 'Compare'],
+  ['report.html', 'Report'],
   ['https://github.com/deftio/revoice', 'GitHub']
 ];
 

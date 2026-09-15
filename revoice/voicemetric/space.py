@@ -277,10 +277,25 @@ def similarity_report(text: str, region: VoiceRegion, population: Population,
     Documents too short to window are still scored, with `interval_reliable` false:
     one window cannot estimate its own variability.
     """
-    import random
-
     ws = windows(text)
     zs = [population.standardize(w) for w in ws] or [population.standardize(text)]
+    return report_from_windows(zs, region, replicates, confidence, seed,
+                               words=len(text.split()))
+
+
+def report_from_windows(zs: list[dict[str, float]], region: VoiceRegion,
+                        replicates: int = BOOTSTRAP_REPLICATES, confidence: float = 0.9,
+                        seed: int = 17, words: int = 0) -> dict:
+    """`similarity_report` given standardized windows directly, rather than a document.
+
+    Split out so `bench.interval_coverage` can hold out half a document's windows and
+    test whether the interval built from the other half actually contains the reading —
+    exercising the shipped estimator rather than a re-implementation of it. A second copy
+    of this arithmetic would drift from this one and the coverage number would then be
+    measuring the copy.
+    """
+    import random
+
     point_z = {a: sum(z[a] for z in zs) / len(zs) for a in AXIS_NAMES}
     point_axis = axis_similarity(point_z, region)
     point_overall = 100.0 * sum(point_axis.values()) / len(AXIS_NAMES)
@@ -324,7 +339,7 @@ def similarity_report(text: str, region: VoiceRegion, population: Population,
         "high": round(o_hi, 1),
         "confidence": confidence,
         "windows": len(zs),
-        "words": len(text.split()),
+        "words": words,
         "interval_reliable": len(zs) >= MIN_WINDOWS,
         "axes": axes,
     }

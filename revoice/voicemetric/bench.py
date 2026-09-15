@@ -657,6 +657,169 @@ def render_length_sensitivity(result: dict) -> str:
     return "\n".join(out)
 
 
+def interval_coverage(docs: list[Doc], population, levels=(0.5, 0.8, 0.9, 0.95),
+                      replicates: int = 400, min_windows: int = 6, seed: int = 11) -> dict:
+    """Does a 90% interval actually contain the answer 90% of the time?
+
+    Every report this package emits leads with an interval, and §1e argues the interval
+    is the honest part — the thing that stops a bare number inviting a decision it cannot
+    support. That argument is worth exactly as much as the interval's coverage, and
+    coverage had never been measured.
+
+    Two tests, because the obvious one is unfair and it took a wrong answer to notice.
+
+    **`null_difference` (primary).** Deal a document's windows alternately into halves A
+    and B, so both span the whole document rather than its two ends. A and B are the same
+    author, same work, same topic, same register — the true difference between them is
+    zero, by construction. Bootstrap that difference the way `transfer.style_delta` does
+    (resample each half independently, subtract, take percentiles) and ask how often the
+    interval contains zero. A calibrated 90% interval does so 90% of the time. This test
+    has no bias to correct: it is a real null, and it validates the exact construction the
+    `moved` verdict depends on.
+
+    **`half_vs_half` (secondary).** Build the interval from A, take the point estimate
+    from B, ask whether B's point lands inside A's band. This is the intuitive test and
+    it is *systematically pessimistic*: A's interval carries A's sampling noise, while
+    B's point carries its own, so the quantity being tested has √2 times the spread the
+    interval was built for. A perfectly calibrated 90% interval scores 0.755 here, not
+    0.90. `expected` records that benchmark next to the observed value, because the raw
+    number looks like a damning result and is not one.
+
+    Regions are fitted per author with the document's own work held out, matching the
+    bench's topic control — otherwise the region has already read what it is scoring.
+    """
+    from revoice.voicemetric.space import (
+        VoiceRegion,
+        _percentile,
+        axis_similarity,
+        report_from_windows,
+        windows,
+    )
+
+    def overall(zs, region):
+        zbar = {a: sum(z[a] for z in zs) / len(zs) for a in AXIS_NAMES}
+        sims = axis_similarity(zbar, region)
+        return 100.0 * sum(sims.values()) / len(AXIS_NAMES)
+
+    by_author: dict[str, list[Doc]] = {}
+    for d in docs:
+        by_author.setdefault(d.author, []).append(d)
+
+    null_hits = {lv: 0 for lv in levels}
+    hv_hits = {lv: 0 for lv in levels}
+    widths: list[float] = []
+    null_widths: list[float] = []
+    misses_low = misses_high = tested = 0
+    rng = random.Random(seed)
+
+    for author, own in by_author.items():
+        if len({d.work for d in own}) < 2:
+            continue                      # nothing to hold out
+        for doc in own:
+            ws = windows(doc.text)
+            if len(ws) < min_windows:
+                continue
+            ref = [d.text for d in own if d.work != doc.work]
+            if len(ref) < 2:
+                continue
+            region = VoiceRegion.fit(author, ref, population)
+            zs = [population.standardize(w) for w in ws]
+            a, b = zs[0::2], zs[1::2]
+            if len(a) < 3 or len(b) < 3:
+                continue
+
+            tested += 1
+            # One seed per document, shared across levels, so the bands nest properly:
+            # the 95% interval contains the 90% one instead of being a separate draw.
+            doc_seed = rng.randrange(10 ** 6)
+
+            # --- primary: bootstrap the difference, which is truly zero ---
+            nrng = random.Random(doc_seed)
+            diffs = []
+            for _ in range(replicates):
+                pa = [a[nrng.randrange(len(a))] for _ in range(len(a))]
+                pb = [b[nrng.randrange(len(b))] for _ in range(len(b))]
+                diffs.append(overall(pa, region) - overall(pb, region))
+            diffs.sort()
+            for lv in levels:
+                lo = _percentile(diffs, (1 - lv) / 2)
+                hi = _percentile(diffs, 1 - (1 - lv) / 2)
+                null_hits[lv] += lo <= 0.0 <= hi
+                if lv == 0.9:
+                    null_widths.append(hi - lo)
+
+            # --- secondary: A's interval against B's point ---
+            truth = overall(b, region)
+            for lv in levels:
+                r = report_from_windows(a, region, replicates, lv, doc_seed)
+                covered = r["low"] <= truth <= r["high"]
+                hv_hits[lv] += covered
+                if lv == 0.9:
+                    widths.append(r["high"] - r["low"])
+                    if not covered:
+                        misses_low += truth < r["low"]
+                        misses_high += truth > r["high"]
+
+    def _med(xs):
+        return round(sorted(xs)[len(xs) // 2], 2) if xs else float("nan")
+
+    def _rate(h):
+        return round(h / tested, 4) if tested else float("nan")
+
+    return {
+        "n": tested,
+        "null_difference": {lv: {"nominal": lv, "covered": _rate(null_hits[lv])}
+                            for lv in levels},
+        "half_vs_half": {lv: {"nominal": lv, "covered": _rate(hv_hits[lv]),
+                              "expected": round(_normal_pair_expectation(lv), 4)}
+                         for lv in levels},
+        "median_width_at_90": _med(widths),
+        "median_null_width_at_90": _med(null_widths),
+        "misses_low": misses_low,
+        "misses_high": misses_high,
+    }
+
+
+def _normal_pair_expectation(level: float) -> float:
+    """What a PERFECTLY calibrated interval scores on the half-vs-half test.
+
+    The tested quantity is a difference of two independent estimates, so it has √2 times
+    the spread the interval was built to cover. Under normality that turns a nominal 0.90
+    into 0.755. Without this benchmark printed alongside, the raw coverage reads as a
+    damning result when most of the shortfall is the test's own geometry.
+    """
+    from statistics import NormalDist
+
+    z = NormalDist().inv_cdf(0.5 + level / 2)
+    return 2 * NormalDist().cdf(z / math.sqrt(2)) - 1
+
+
+def render_interval_coverage(result: dict) -> str:
+    """Nominal vs actual coverage. The diagonal is the goal."""
+    out = [f"interval coverage — {result['n']} documents, split into halves", ""]
+    out.append("  NULL DIFFERENCE (primary) — two halves of one document differ by zero;")
+    out.append("  how often does the interval on that difference contain zero?")
+    out.append(f"    {'nominal':>9}{'actual':>9}{'error':>9}")
+    for _lv, e in sorted(result["null_difference"].items()):
+        err = e["covered"] - e["nominal"]
+        flag = ("  <-- too narrow: overconfident" if err < -0.03 else
+                "  <-- too wide: power left unused" if err > 0.03 else "")
+        out.append(f"    {e['nominal']:>9.2f}{e['covered']:>9.3f}{err:>+9.3f}{flag}")
+    out.append("")
+    out.append("  HALF VS HALF (secondary) — pessimistic by \u221a2; 'expected' is what a")
+    out.append("  perfectly calibrated interval would score on this test, not the nominal.")
+    out.append(f"    {'nominal':>9}{'actual':>9}{'expected':>10}{'error':>9}")
+    for _lv, e in sorted(result["half_vs_half"].items()):
+        err = e["covered"] - e["expected"]
+        out.append(f"    {e['nominal']:>9.2f}{e['covered']:>9.3f}"
+                   f"{e['expected']:>10.3f}{err:>+9.3f}")
+    out.append("")
+    out.append(f"  median 90% width: {result['median_width_at_90']} points "
+               f"(on the difference: {result['median_null_width_at_90']})")
+    out.append(f"  misses below the band: {result['misses_low']}   above: {result['misses_high']}")
+    return "\n".join(out)
+
+
 def verdict(result: dict, max_fpr: float = DEFAULT_MAX_FPR) -> list[str]:
     """Plain-language findings. The bench should answer the question, not just tabulate."""
     notes: list[str] = []

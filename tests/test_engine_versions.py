@@ -225,3 +225,93 @@ def test_revoice_exposes_version_like_the_engines_do():
 
     assert revoice.version() == revoice.__version__
     assert {revoice.version(), rubric.version(), voicemetric.version()}, "all three callable"
+
+
+# ---------------------------------------------------------------------------------
+# Runtime version support.
+#
+# Every package in this family reports its own version at runtime, in a form you print
+# and a form you compare: bitwrench has bw.version / bw.versionInfo / bw.getVersion(),
+# fr_math has FR_MATH_VERSION beside a packed FR_MATH_VERSION_HEX. revoice had only the
+# string, on three packages that move independently, with no way to ask for all of them.
+
+
+
+def _packages():
+    import revoice
+    import revoice.rubric as rubric_pkg
+    import revoice.voicemetric as vm_pkg
+
+    return revoice, vm_pkg, rubric_pkg
+
+
+def test_every_package_reports_a_version_at_runtime():
+    for pkg in _packages():
+        assert isinstance(pkg.version(), str) and pkg.version()
+        assert pkg.version() == pkg.__version__
+
+
+def test_every_package_reports_a_comparable_version():
+    """A string is for humans; a tuple is for `>=`."""
+    for pkg in _packages():
+        info = pkg.version_info()
+        assert isinstance(info, tuple)
+        assert all(isinstance(n, int) for n in info)
+        assert ".".join(str(n) for n in info) == pkg.version()
+        assert info == pkg.__version_info__
+
+
+def test_the_tuple_exists_because_string_comparison_is_wrong():
+    """Not a style preference. "0.1.10" < "0.1.9" as strings, and that is the exact
+    range revoice is in — the bug would arrive on the tenth patch of any minor."""
+    assert "0.1.10" < "0.1.9"                    # the trap, demonstrated
+    assert (0, 1, 10) > (0, 1, 9)                # what anyone actually means
+
+
+def test_versions_reports_every_component_in_one_call():
+    import revoice
+    import revoice.rubric as rubric_pkg  # noqa: F401
+    import revoice.voicemetric as vm_pkg  # noqa: F401
+
+    v = revoice.versions()
+    assert set(v) == {"revoice", "voicemetric", "voicemetric_signature", "rubric"}
+    assert v["revoice"] == revoice.version()
+    assert v["voicemetric"] == vm_pkg.version()
+    assert v["rubric"] == rubric_pkg.version()
+
+
+def test_versions_carries_the_signature_not_just_the_version():
+    """The signature changes when the scoring configuration changes WITHOUT the version
+    moving, so a report with versions and no signature cannot say whether two results
+    are comparable. 0.5.0 shipped with 0.4.0's signature deliberately."""
+    import revoice
+    import revoice.rubric as rubric_pkg  # noqa: F401
+    import revoice.voicemetric as vm_pkg  # noqa: F401
+
+    assert revoice.versions()["voicemetric_signature"] == vm_pkg.signature()
+
+
+def test_describe_carries_the_comparable_form_too():
+    import revoice.rubric as rubric_pkg  # noqa: F401
+    import revoice.voicemetric as vm_pkg  # noqa: F401
+
+    d = vm_pkg.describe()
+    assert d["version"] == vm_pkg.version()
+    assert d["version_info"] == list(vm_pkg.version_info())
+
+
+def test_the_cli_reports_one_line_and_the_full_set():
+    from typer.testing import CliRunner
+
+    import revoice
+    from revoice.cli import app
+
+    runner = CliRunner()
+    terse = runner.invoke(app, ["--version"])
+    assert terse.exit_code == 0
+    assert terse.output.strip() == f"revoice {revoice.version()}"
+
+    full = runner.invoke(app, ["--versions"])
+    assert full.exit_code == 0
+    for name, value in revoice.versions().items():
+        assert name in full.output and value in full.output

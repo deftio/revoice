@@ -726,3 +726,98 @@ def test_cli_rewrite_score_prints_the_interval_when_it_has_one(space_corpus, tmp
     assert r.exit_code == 0, r.output
     assert "interval [" in r.output and "of the gap" in r.output
     assert "no measurable movement" in r.output
+
+
+# ---------- the Markdown report ----------
+
+def _md_reports(overlapping: bool):
+    """Two reports whose intervals either overlap or are forced apart."""
+    a = {"overall": 60.0, "low": 50.0, "high": 70.0, "interval_reliable": True,
+         "words": 900, "windows": 4,
+         "axes": {n: {"similarity": 0.5, "low": 0.4, "high": 0.6, "deviation": 0.5}
+                  for n in AXIS_NAMES}}
+    b = json.loads(json.dumps(a))
+    if overlapping:
+        b.update(overall=55.0, low=45.0, high=65.0)
+    else:
+        b.update(overall=20.0, low=10.0, high=30.0)
+    return [("First", "a.md", a), ("Second", "b.md", b)]
+
+
+def test_markdown_names_an_overlap_as_not_evidence():
+    from revoice.voicemetric import chart
+
+    md = chart.markdown(_md_reports(overlapping=True), voice="v")
+    assert "overlap by" in md and "not evidence" in md
+
+
+def test_markdown_reports_a_clean_separation_as_real():
+    from revoice.voicemetric import chart
+
+    md = chart.markdown(_md_reports(overlapping=False), voice="v")
+    assert "clear each other by 20.0 points" in md
+    assert "separation is real" in md
+
+
+def test_markdown_handles_intervals_that_touch_exactly():
+    """The edge case that produced "clear by -0.0 points" — nonsense, and it formatted
+    differently in Python and JavaScript, which is how it was found."""
+    from revoice.voicemetric import chart
+
+    items = _md_reports(overlapping=False)
+    items[1][2].update(overall=40.0, low=30.0, high=50.0)   # high == other's low
+    md = chart.markdown(items, voice="v")
+    assert "meet exactly" in md
+    # Assert on the VERDICT line, not on the whole document: "differ by 20.0 points"
+    # contains "0.0 points", so the blunt version of this check fails on correct output.
+    verdict = next(line for line in md.split("\n") if "two closest readings" in line)
+    assert "-0.0" not in verdict and "clear each other" not in verdict
+
+
+def test_markdown_survives_a_sample_with_no_interval():
+    from revoice.voicemetric import chart
+
+    items = _md_reports(overlapping=True)
+    items[1][2]["interval_reliable"] = False
+    md = chart.markdown(items, voice="v")
+    assert "no interval" in md
+    # With no comparable pair there is no overlap claim to make, and none is made. Check
+    # for the SECTION, not the phrase: "not evidence" also appears in the standing
+    # "How to read this" guidance, which is always present and should be.
+    assert "## What this says" not in md
+    assert "## How to read this" in md
+
+
+def test_markdown_bar_is_proportional_and_fixed_width():
+    from revoice.voicemetric.chart import _bar
+
+    assert len(_bar(0)) == len(_bar(50)) == len(_bar(100)) == 20
+    assert _bar(0).count("█") == 0
+    assert _bar(100).count("█") == 20
+    assert _bar(50).count("█") == 10
+    assert _bar(150).count("█") == 20        # clamped, not overflowing
+    assert _bar(-10).count("█") == 0
+
+
+def test_cli_space_report_writes_markdown_for_an_md_suffix(space_corpus, tmp_path):
+    draft = tmp_path / "draft.md"
+    draft.write_text(TERSE)
+    out = tmp_path / "report.md"
+    r = runner.invoke(app, ["space", str(space_corpus), "-t", str(draft),
+                            "--against", "terse", "--report", str(out),
+                            "--replicates", "40"])
+    assert r.exit_code == 0, r.output
+    text = out.read_text()
+    assert text.startswith("# Voice report")
+    assert "<html" not in text and "<svg" not in text
+
+
+def test_cli_space_report_still_writes_html_by_default(space_corpus, tmp_path):
+    draft = tmp_path / "draft.md"
+    draft.write_text(TERSE)
+    out = tmp_path / "report.html"
+    r = runner.invoke(app, ["space", str(space_corpus), "-t", str(draft),
+                            "--against", "terse", "--report", str(out),
+                            "--replicates", "40"])
+    assert r.exit_code == 0, r.output
+    assert out.read_text().lstrip().startswith("<!doctype")

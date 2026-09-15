@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>revoice — voice report</title>
+<meta name="description" content="Measure several writing samples against one voice at once. Every reading on a single scale with its confidence interval, then axis by axis. Exports as Markdown. Runs entirely in your browser.">
+<script src="https://cdn.jsdelivr.net/npm/bitwrench/dist/bitwrench.umd.min.js"></script>
+<script src="version.js"></script>
+<script src="site.js"></script>
+<script src="engine-constants.js"></script>
+<script src="voicemetric.js"></script>
+<script src="voicespace.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<script>
+/* Voice report — several samples against one voice.
+ *
+ * The browser twin of `revoice space --report`. compare.html answers "did THIS text
+ * drift from that one"; this answers "of these several samples, which sit closest to
+ * this voice, and is that ordering worth anything".
+ *
+ * The design point is the second half of that question. A ranked list invites you to
+ * read the order as a result, and on this measure the order is very often noise: two
+ * samples can differ by 9 points and share 14 points of interval. So the page leads
+ * with one scale carrying every reading AND its interval, states the worst overlap in
+ * words before any number is ranked, and only then shows the axes.
+ *
+ * Everything runs client-side; nothing is uploaded. The Markdown export is built by
+ * vsMarkdownReport, which mirrors voicemetric/chart.py:markdown() and is compared
+ * against it in tests/test_pages_parity.py — so the button and the CLI cannot produce
+ * different documents.
+ */
+
+var POPULATION = null;
+fetch('demo/population.json').then(function (r) { return r.json(); })
+  .then(function (p) { POPULATION = p; bw.refresh(panel); })
+  .catch(function () { POPULATION = false; bw.refresh(panel); });
+
+var state = { samples: [{ name: 'Sample A', text: '' },
+                        { name: 'Sample B', text: '' }],
+              result: null, markdown: null };
+
+/* ---------- input rows ---------- */
+
+function sampleRow(s, i) {
+  return { t: 'div', a: { class: 'bw_bccl_card rv_sample' }, c: {
+    t: 'div', a: { class: 'bw_bccl_card_body' }, c: [
+      { t: 'div', a: { class: 'rv_samplehead' }, c: [
+        bw.makeInput({ id: 'name' + i, value: s.name, placeholder: 'Name this sample',
+                       'aria-label': 'Name for sample ' + (i + 1) }),
+        state.samples.length > 2
+          ? bw.makeButton({ text: 'remove', variant: 'outline_secondary', size: 'sm',
+                            onclick: function () { removeSample(i); } })
+          : ''
+      ]},
+      /* `value` is not optional here. Adding or removing a sample re-renders every
+         row, and a textarea rendered without its stored value comes back empty — so
+         everything already typed is silently wiped the moment someone presses
+         "add another sample". Found by the interaction test; the static render
+         could not see it, because the page looks perfectly fine either way. */
+      bw.makeTextarea({ id: 'text' + i, rows: 7, value: s.text,
+                        placeholder: 'Paste a passage to measure…',
+                        'aria-label': 'Text for sample ' + (i + 1) })
+    ]}};
+}
+
+function readInputs() {
+  state.samples.forEach(function (s, i) {
+    var n = bw.el('#name' + i), x = bw.el('#text' + i);
+    if (n) s.name = n.value || ('Sample ' + String.fromCharCode(65 + i));
+    if (x) s.text = x.value;
+  });
+}
+
+function addSample() {
+  readInputs();
+  state.samples.push({ name: 'Sample ' + String.fromCharCode(65 + state.samples.length),
+                       text: '' });
+  bw.refresh(inputs);
+}
+
+function removeSample(i) {
+  readInputs();
+  state.samples.splice(i, 1);
+  bw.refresh(inputs);
+}
+
+/* ---------- running it ---------- */
+
+function run() {
+  readInputs();
+  var ref = (bw.el('#ref') || {}).value || '';
+  var ready = state.samples.filter(function (s) { return s.text.trim().length >= 200; });
+
+  if (ref.trim().length < 400) {
+    state.result = { error: 'The reference needs more text — a few hundred words at least, '
+                          + 'ideally several paragraphs on more than one subject.' };
+    return bw.refresh(panel);
+  }
+  if (ready.length < 1) {
+    state.result = { error: 'Add at least one sample of 200 words or more. Shorter passages '
+                          + 'produce intervals so wide that nothing can be concluded from them.' };
+    return bw.refresh(panel);
+  }
+  if (!POPULATION) {
+    state.result = { error: 'The reference population did not load, so there is nothing to '
+                          + 'place these texts against.' };
+    return bw.refresh(panel);
+  }
+
+  /* The voice is a REGION built from the reference's own windows, and every sample is
+     z-scored against a shipped population of real prose rather than against the
+     reference itself — otherwise every coordinate collapses toward zero and every
+     sample looks equally typical. */
+  var refWindows = vsWindows(ref);
+  if (refWindows.length < 2) refWindows = [ref];
+  var region = vsFitRegion('your reference', refWindows, POPULATION);
+
+  var items = ready.map(function (s) {
+    return { name: s.name, report: vsSimilarityReport(s.text, region, POPULATION) };
+  });
+  items.sort(function (a, b) { return b.report.overall - a.report.overall; });
+
+  var engine = (typeof REVOICE_VERSION !== 'undefined')
+    ? 'voicemetric ' + REVOICE_VERSION.voicemetric + ' (' + REVOICE_VERSION.voicemetric_signature + ')'
+    : '';
+  state.markdown = vsMarkdownReport(items, 'your reference', engine);
+  state.result = { items: items, worst: vsWorstOverlap(items.map(function (i) { return i.report; })),
+                   refWindows: refWindows.length, engine: engine };
+  bw.refresh(panel);
+}
+
+/* ---------- export ---------- */
+
+function download() {
+  var blob = new Blob([state.markdown], { type: 'text/markdown;charset=utf-8' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = 'voice-report.md';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+}
+
+function copyMarkdown(btn) {
+  /* Clipboard first, with a visible fallback: the API needs a secure context and
+     permission, and a button that silently does nothing is worse than one that tells
+     you to select the text yourself. */
+  var done = function () { btn.textContent = 'copied'; setTimeout(function () {
+    btn.textContent = 'copy Markdown'; }, 1600); };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(state.markdown).then(done, function () {
+      btn.textContent = 'press ⌘C — text selected';
+      var pre = bw.el('#mdsource');
+      if (pre) { pre.hidden = false; window.getSelection().selectAllChildren(pre); }
+    });
+  } else {
+    btn.textContent = 'press ⌘C — text selected';
+    var pre = bw.el('#mdsource');
+    if (pre) { pre.hidden = false; window.getSelection().selectAllChildren(pre); }
+  }
+}
+
+/* ---------- output ---------- */
+
+function verdictBlock(worst, items) {
+  if (!worst) {
+    return bw.makeAlert({ variant: 'info', content: { t: 'span', c: [
+      { t: 'b', c: 'One sample. ' },
+      'With a single reading there is nothing to compare it against. Add a second sample '
+      + '— ideally one you know is by the same writer — so you can see whether the '
+      + 'difference between them is larger than the uncertainty in either.' ]}});
+  }
+  var gap = Math.abs(worst.a.overall - worst.b.overall);
+  if (worst.overlap !== worst.overlap) {
+    return bw.makeAlert({ variant: 'warning', content: { t: 'span', c: [
+      { t: 'b', c: 'No interval on at least one sample. ' },
+      'A passage under three paragraphs cannot be resampled, so it has no measured '
+      + 'uncertainty and cannot be compared with the others. Treat its number as an impression.' ]}});
+  }
+  if (worst.overlap > 0) {
+    return bw.makeAlert({ variant: 'warning', content: { t: 'span', c: [
+      { t: 'b', c: 'The ranking above is not evidence. ' },
+      'The two closest readings differ by ' + gap.toFixed(1) + ' points, but their intervals '
+      + 'overlap by ' + worst.overlap.toFixed(1) + '. Hand this page a different few pages of '
+      + 'the same documents and the order could flip. Read the axes below — they say '
+      + 'WHAT differs, which is a more reliable thing than WHICH is closer.' ]}});
+  }
+  return bw.makeAlert({ variant: 'success', content: { t: 'span', c: [
+    { t: 'b', c: 'These readings genuinely separate. ' },
+    'The two closest differ by ' + gap.toFixed(1) + ' points and their intervals clear each '
+    + 'other by ' + (-worst.overlap).toFixed(1) + '. That is a real difference on this '
+    + 'measure — which measures register, not authorship. See the limits below.' ]}});
+}
+
+function resultView(d) {
+  if (!d) {
+    return bw.makeAlert({ variant: 'light', content:
+      'Paste a reference voice and one or more samples, then press “measure”.' });
+  }
+  if (d.error) return bw.makeAlert({ variant: 'warning', content: d.error });
+
+  var rail = { t: 'div', a: { class: 'rv_rail' }, c:
+    d.items.map(function (it) {
+      return vsRailRow(it.name, it.report.words + ' words · '
+                       + it.report.windows + ' window(s)', it.report);
+    }).concat([
+      { t: 'div', a: { class: 'rv_rscale' }, c: [
+        { t: 'span' },
+        { t: 'span', a: { class: 'rv_rticks' },
+          c: ['0', '25', '50', '75', '100'].map(function (x) { return { t: 'span', c: x }; }) },
+        { t: 'span' } ]}
+    ])};
+
+  return { t: 'div', c: [
+    { t: 'h2', c: 'Every reading on one scale' },
+    { t: 'p', a: { class: 'rv_lede' }, c: 'The mark is the score; the shaded band is where '
+      + 'that score lands when the document’s own paragraphs are resampled. Bands that '
+      + 'overlap mean the two samples are not distinguishable.' },
+    rail,
+    verdictBlock(d.worst, d.items),
+
+    { t: 'div', a: { class: 'rv_exportbar' }, c: [
+      bw.makeButton({ text: 'download Markdown', variant: 'primary',
+                      onclick: function () { download(); } }),
+      bw.makeButton({ text: 'copy Markdown', variant: 'outline_primary',
+                      onclick: function (e) { copyMarkdown(e.target); } }),
+      { t: 'span', a: { class: 'rv_rsub' },
+        c: 'the same document ' + '`revoice space --report out.md`' + ' writes' }
+    ]},
+    { t: 'pre', a: { id: 'mdsource', class: 'rv_mdsource', hidden: 'hidden' },
+      c: state.markdown || '' },
+
+    { t: 'h2', c: 'Axis by axis' },
+    { t: 'p', a: { class: 'rv_lede' }, c: 'Where the ranking is unreliable, this usually '
+      + 'is not: a bar shows how far a sample sits from the reference on one named habit, '
+      + 'and which side it falls on.' }
+  ].concat(d.items.map(function (it) {
+    return { t: 'div', c: [
+      { t: 'h3', c: it.name },
+      { t: 'div', a: { class: 'rv_scroll rv_chart' }, c: bw.raw(vsRenderChart(it.report,
+          it.name + '  vs  your reference',
+          it.report.words + ' words · ' + it.report.windows + ' window(s) · 17 axes'
+          + ' · 90% bootstrap interval')) }
+    ]};
+  }))};
+}
+
+/* ---------- page ---------- */
+
+bw.mount('#app', sitePage('report.html', [
+  { t: 'h1', c: 'Voice report' },
+  { t: 'p', c: 'Measure several passages against one reference voice at once, and see '
+    + 'whether the differences between them are bigger than the uncertainty in each. '
+    + 'Everything runs in your browser; nothing is uploaded.' },
+
+  bw.makeAlert({ variant: 'info', content: { t: 'span', c: [
+    { t: 'b', c: 'What you get. ' },
+    'One 0–100 score per sample with a confidence interval, every reading drawn on the '
+    + 'same scale so overlaps are obvious, a plain-language verdict on whether the ranking '
+    + 'means anything, and a per-axis breakdown of ', { t: 'b', c: 'what' },
+    ' differs — sentence length, subordination, punctuation variety, and fourteen more. '
+    + 'Then a Markdown export you can paste into an issue or a PR.' ]}}),
+
+  section('1 · The reference voice', [
+    { t: 'p', c: 'The writing you want to measure against. More is better — several '
+      + 'hundred words at minimum, and ideally covering more than one subject, so the '
+      + 'reference describes how the person writes rather than what they were writing about.' },
+    { t: 'div', a: { class: 'bw_bccl_card' }, c: { t: 'div', a: { class: 'bw_bccl_card_body' }, c:
+      bw.makeTextarea({ id: 'ref', rows: 10,
+        placeholder: 'Several paragraphs of the voice you are measuring against…' }) }}
+  ]),
+
+  section('2 · The samples', [
+    { t: 'p', c: 'Each one gets its own score and its own interval. Two hundred words is '
+      + 'the floor; below that the interval is so wide it tells you nothing. A useful habit: '
+      + 'include one passage you know is by the same writer, as a control — if it does not '
+      + 'separate from the others, that is telling you about the measure, not about the texts.' },
+    { t: 'div', a: { id: 'inputs' }, c: '' },
+    { t: 'div', a: { class: 'rv_exportbar' }, c: [
+      bw.makeButton({ text: '+ add another sample', variant: 'outline_secondary',
+                      onclick: function () { addSample(); } }) ]}
+  ]),
+
+  section('3 · The result', [
+    { t: 'div', a: { id: 'go' }, c: '' },
+    { t: 'div', a: { id: 'results' }, c: '' }
+  ]),
+
+  section('How to read it', [
+    cardRow([
+      { title: 'The score', content: '0–100 similarity to the reference across 17 named '
+        + 'axes of style. It is not a percentage or a probability — it is a distance, '
+        + 'turned around so that higher means closer.' },
+      { title: 'The interval', content: 'The document’s own paragraphs are resampled 400 '
+        + 'times and rescored. The band is the middle 90%. It answers: how much would this '
+        + 'move if I had been handed a different few pages of the same document?' },
+      { title: 'The overlap', content: 'If two bands overlap, the two samples are not '
+        + 'distinguishable, whatever the order says. This is the single most important '
+        + 'thing on the page, and it is why the bands are drawn at all.' },
+      { title: 'The axes', content: 'Which habits differ, and in which direction. More '
+        + 'reliable than the ranking, and more useful — “longer sentences, far fewer '
+        + 'semicolons” is actionable in a way that “43 out of 100” is not.' }
+    ])
+  ]),
+
+  section('What this cannot do', [
+    bw.makeAlert({ variant: 'warning', content: { t: 'span', c: [
+      { t: 'b', c: 'This is not an authorship test. ' },
+      'It reads surface habits — function words, sub-word texture, sentence rhythm, '
+      + 'punctuation — and those track ', { t: 'b', c: 'how a passage is pitched' },
+      ' far more than ', { t: 'b', c: 'who wrote it' }, '. Measured across 70 authors in 11 '
+      + 'genres against same-genre rivals, it reaches AUC 0.67: better than chance, nowhere '
+      + 'near proof. It will confidently rate two writers of the same era and genre as '
+      + 'similar, because on these features they are. Use it to notice that an edit moved '
+      + 'your register. Do not use it to decide who wrote something.' ]}}),
+    { t: 'p', c: ['The same measurement runs in the command line tool, and a test in the '
+      + 'repository asserts the two agree on shared fixtures — so what you see here is '
+      + 'what ', { t: 'code', c: 'revoice space --report' }, ' prints.'] }
+  ])
+]));
+
+var inputs = bw.mount('#inputs', { t: 'div', o: {
+  state: state,
+  render: function (el) {
+    bw.DOM(el, { t: 'div', a: { class: 'rv_samples' },
+                 c: state.samples.map(function (s, i) { return sampleRow(s, i); }) });
+  }
+}});
+
+var panel = bw.mount('#results', { t: 'div', o: {
+  state: state,
+  render: function (el) { bw.DOM(el, resultView(state.result)); }
+}});
+
+bw.DOM('#go', bw.makeButton({ text: 'measure', variant: 'primary',
+                              onclick: function () { run(); } }));
+</script>
+</body>
+</html>

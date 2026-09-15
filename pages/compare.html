@@ -8,7 +8,8 @@
 <script src="https://cdn.jsdelivr.net/npm/bitwrench/dist/bitwrench.umd.min.js"></script>
 <script src="version.js"></script>
 <script src="site.js"></script>
-<script src="stylometry.js"></script>
+<script src="engine-constants.js"></script>
+<script src="voicemetric.js"></script>
 <script src="voicespace.js"></script>
 </head>
 <body>
@@ -18,14 +19,28 @@
  *
  * This page used to answer "is this the same author?" with confident bands
  * ("statistically indistinguishable"). It cannot. Measured by `revoice bench`
- * under a topic-controlled protocol the browser metric scores macro AUC 0.687 /
- * EER 0.367, and on the bundled corpora it rates Darwin's Autobiography as no
+ * under a topic-controlled protocol the metric scores macro AUC 0.667 across 70
+ * authors with same-genre negatives, and on the bundled corpora it rates Darwin's
+ * Autobiography as no
  * drift from Twain's A Dog's Tale (+2.5 sigma) while rating Twain's own comic
  * diary as clear drift (-5.4 sigma) -- because the surface features it reads
  * track REGISTER far more than authorship. So the page now answers the question
  * it can actually answer -- how far did the register move, and in which
  * components -- and states the failure mode on the page rather than in a
  * footnote.
+ *
+ * ENGINE NOTE (September 2026). This page ran its own stylometry for a long time --
+ * pages/stylometry.js, which began as "a port of the demo subset" and was never tested
+ * against the Python. By the time anyone measured, Python had been refitted three times
+ * and grown six components the JS did not have, and the page was scoring with `ngram`
+ * weighted 0.600 against a fitted 0.181. On 112 trials across 28 authors it reached AUC
+ * 0.688 against Python's 0.793, and its headline sigma reached 0.662. It ranked Twain's
+ * own other work as LESS like Twain than Bret Harte.
+ *
+ * It now loads pages/voicemetric.js, a full port of features.py + baseline.py that
+ * agrees with the Python composite on 112 of 112 trials. All ten components are shown,
+ * each with the weight it actually carries, so a family the bench measured as noise is
+ * visible as a 0.000 rather than quietly omitted.
  *
  * Presentation note: the score is reported as a z-score against the reference's
  * own leave-one-out variation band, not as a percentage of it. A ratio of two
@@ -44,17 +59,34 @@ function bandFor(z) {
     'The candidate is measurably further from the reference than the reference’s own passages are. The component table shows where it came from.'];
 }
 
-function componentRows(parts, delta) {
-  return [
-    { name: 'function words (Burrows’ Δ)', v: parts.delta,
-      what: 'unconscious grammar-word habits — the classic authorship signal (raw Δ ' + delta.toFixed(2) + ')' },
-    { name: 'character n-grams', v: parts.ngram,
-      what: 'sub-word texture: spelling, morphology, spacing habits' },
-    { name: 'sentence rhythm', v: parts.rhythm,
-      what: 'the distribution of sentence lengths' },
-    { name: 'punctuation', v: parts.punct,
-      what: 'per-sentence punctuation habits' }
-  ];
+/* All ten components, ordered by the weight they actually carry in the composite —
+   which comes from VM_CONST.WEIGHTS, generated out of the fitted Python values. The old
+   page showed four of them, chosen by hand, and weighted n-grams at 0.6 against a fitted
+   0.181. Showing a component's real weight beside it is what makes that visible: a family
+   sitting at 0.000 is one the bench measured as noise, and the reader should see that
+   rather than wonder why it is listed. */
+var VM_COMPONENT_LABELS = {
+  delta:     ['function words (Burrows\u2019 \u0394)', 'unconscious grammar-word habits \u2014 the classic authorship signal'],
+  punct:     ['punctuation', 'per-sentence rates, plus the scale-free ratios between marks'],
+  ngram:     ['character n-grams', 'sub-word texture: spelling, morphology, spacing habits'],
+  richness:  ['vocabulary richness', 'Yule\u2019s K, MTLD, word length, readability'],
+  structure: ['paragraph shape', 'paragraph length distribution and sentences per paragraph'],
+  fwbigram:  ['function-word bigrams', 'content-free joinery: \u201cof the\u201d, \u201cand then\u201d'],
+  opener:    ['sentence openings', 'how sentences are started, as a class distribution'],
+  syntax:    ['syntactic proxies', 'subordination, nominalisation, passives, -ly adverbs'],
+  rhythm:    ['sentence rhythm', 'the distribution of sentence lengths'],
+  vocab:     ['subject matter (tf-idf)', 'topical overlap \u2014 weighted zero by construction, not by measurement']
+};
+
+function componentRows(comps, delta) {
+  var order = Object.keys(VM_COMPONENT_LABELS).slice();
+  order.sort(function (a, b) { return (VM_CONST.WEIGHTS[b] || 0) - (VM_CONST.WEIGHTS[a] || 0); });
+  return order.map(function (k) {
+    var L = VM_COMPONENT_LABELS[k], w = VM_CONST.WEIGHTS[k] || 0;
+    var what = L[1];
+    if (k === 'delta') what += ' (raw \u0394 ' + delta.toFixed(2) + ')';
+    return { name: L[0], v: comps[k], what: what, weight: w, key: k };
+  });
 }
 
 /* The paired reading. Two axes, side by side, never averaged: a rewrite that nails the
@@ -116,7 +148,12 @@ function resultView(d) {
   if (d.error) return bw.makeAlert({ variant: 'warning', content: d.error });
 
   var b = bandFor(d.z);
-  var weakest = d.rows.slice().sort(function (x, y) { return x.v - y.v; })[0];
+  /* Only families that carry weight can be "the biggest movement". A low score on a
+     component the bench fitted to 0.000 moves the composite by exactly nothing, and
+     reporting it as the headline finding would be pointing at noise. */
+  var carrying = d.rows.filter(function (r) { return r.weight > 0; });
+  var weakest = (carrying.length ? carrying : d.rows)
+                  .slice().sort(function (x, y) { return x.v - y.v; })[0];
 
   var rail = '';
   if (d.paired) {
@@ -182,6 +219,23 @@ function resultView(d) {
       { t: 'b', c: 'Biggest movement: ' }, weakest.name,
       ' (similarity ' + weakest.v.toFixed(2) + ') — ', weakest.what, '.' ]}}),
 
+    scrollTable({
+      striped: true, size: 'sm',
+      headers: ['component', 'similarity', 'weight', 'what it reads'],
+      rows: d.rows.map(function (r) {
+        return [r.name, r.v.toFixed(3),
+                r.weight ? r.weight.toFixed(3) : '0.000 \u00b7 noise',
+                r.what];
+      }) }),
+    bw.makeAlert({ variant: 'light', content: { t: 'span', c: [
+      { t: 'b', c: 'On the weights. ' },
+      'They are fitted by ', { t: 'code', c: 'revoice bench --fit' },
+      ' across 70 authors with same-genre negatives, not chosen by hand, and they are '
+      + 'generated into this page from the Python rather than typed in. Four families '
+      + 'fit to exactly zero \u2014 the bench measured them as noise on a corpus broad '
+      + 'enough to tell. They are still computed and still shown, because a component '
+      + 'that contributes nothing is worth seeing rather than quietly dropping.' ]}}),
+
     d.chart ? { t: 'div', a: { class: 'rv_scroll rv_chart' }, c: bw.raw(d.chart) }
             : bw.makeAlert({ variant: 'warning', content:
                 'Axis chart unavailable — demo/population.json did not load, so there is no '
@@ -200,8 +254,8 @@ function compare(panel) {
     state.result = { error: 'Need more text — a few paragraphs of reference and at least one of candidate.' };
     return bw.refresh(panel);
   }
-  var base = buildBaseline(ref);
-  var r = score(fingerprint(cand), base);
+  var base = vmBuildLiveBaseline(ref);
+  var r = vmScoreAgainstLive(cand, base);
 
   // the axis chart: reference windows become a voice REGION, and the candidate is
   // placed in it. z-scored against a shipped population of real prose, not against
@@ -237,7 +291,7 @@ function compare(panel) {
     caveats.push('the candidate is under three paragraphs, so the chart shows no interval');
 
   state.result = { z: r.z, composite: r.composite, self: base.self, windows: base.windows,
-                   rows: componentRows(r.parts, r.delta), caveats: caveats,
+                   rows: componentRows(r.components, r.burrows_delta), caveats: caveats,
                    chart: chart, sim: simReport, paired: paired, graded: graded };
   bw.refresh(panel);
 }
