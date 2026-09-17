@@ -160,7 +160,16 @@ confirm() {
 # BSD sed needs an empty argument after -i, GNU sed refuses one. The script suggests a
 # sed command when the changelog is undated, and suggesting the wrong one is worse than
 # suggesting none — so it works out which is installed rather than telling you to.
-if sed --version >/dev/null 2>&1; then SED_INPLACE="sed -i"; else SED_INPLACE="sed -i ''"; fi
+# Two forms, and they are not interchangeable. SED_INPLACE is the string SHOWN to you;
+# SED_ARGS is what actually gets run. Storing the BSD form as the string "sed -i ''" and
+# expanding it unquoted does not pass an empty argument — the quotes survive expansion as
+# a literal two-character backup suffix, so sed edits the file AND leaves a "CHANGELOG.md''"
+# beside it. The release caught that itself, on its own dirty-tree gate, one step later.
+if sed --version >/dev/null 2>&1; then
+  SED_INPLACE="sed -i"; SED_ARGS=(-i)
+else
+  SED_INPLACE="sed -i ''"; SED_ARGS=(-i "")
+fi
 
 PY=$(command -v python3 || true)
 [ -n "$PY" ] || die "python3 not found.
@@ -312,7 +321,7 @@ case "$CHANGELOG_PROBLEM" in
     # still stops.
     if [ "$DO_FIX" -eq 1 ]; then
       confirm "Date the CHANGELOG heading '## $VERSION' as $TODAY?"
-      run_cmd $SED_INPLACE "s/^## $VERSION (unreleased)\$/## $VERSION - $TODAY/" CHANGELOG.md
+      run_cmd sed "${SED_ARGS[@]}" "s/^## $VERSION (unreleased)\$/## $VERSION - $TODAY/" CHANGELOG.md
       REPAIRED="$REPAIRED CHANGELOG.md"
       ok "CHANGELOG dated $TODAY"
     else

@@ -1,6 +1,14 @@
 # Changelog
 
-## 0.1.11 (unreleased)
+## 0.1.11 - 2026-09-17
+
+### Fixed — `--fix` left a stray backup file beside the changelog
+BSD `sed -i` takes a backup suffix. Holding the BSD form as the string `"sed -i ''"` and
+expanding it unquoted does **not** pass sed an empty argument — the quotes survive
+expansion as a literal two-character suffix, so sed edited `CHANGELOG.md` correctly and
+left a `CHANGELOG.md''` next to it. The release then stopped on its own dirty-tree gate
+one step later, which is the system working, but it should not have had to. The displayed
+string and the executed argument list are now separate things.
 
 ### Fixed — `--release` could not finish a release that was already merged
 A release can arrive half-done: the PR gets merged on GitHub — by you, by auto-merge, by
