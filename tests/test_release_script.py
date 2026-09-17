@@ -201,6 +201,15 @@ def test_fix_dates_the_changelog_and_commits_only_what_it_touched():
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         assert f"## 9.9.9 - {today}" in (wt / "CHANGELOG.md").read_text(), r.stdout + r.stderr
 
+        # BSD sed's -i takes a backup suffix. Passing the quotes as part of a STRING
+        # ("sed -i ''") and expanding it unquoted does not give sed an empty argument —
+        # the quotes survive as a literal suffix, and sed edits the file and leaves a
+        # `CHANGELOG.md''` next to it. That shipped once and the release caught it on its
+        # own dirty-tree gate one step later.
+        strays = [f.name for f in wt.iterdir() if f.name.startswith("CHANGELOG.md")
+                  and f.name != "CHANGELOG.md"]
+        assert not strays, f"the in-place edit left a backup file: {strays}"
+
         log = sp.run(["git", "log", "--name-only", "--format=%s", "-1"], cwd=wt,
                      capture_output=True, text=True).stdout
         assert "Release 9.9.9" in log
