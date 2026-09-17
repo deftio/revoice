@@ -25,6 +25,13 @@ It refuses to publish on a main whose latest CI run is anything but green, becau
 release is only as good as the run that validated the commit it points at. Tagging is now
 one shared step reached either way, and it echoes every git command it runs.
 
+### Fixed — `.coverage` was a tracked build artefact
+A 52 KB SQLite file that `pytest --cov` rewrites on every run, committed nine times as a
+meaningless binary diff, and read by nothing — CI computes coverage fresh. It also meant
+a full test run left the working tree dirty, which the release script correctly refuses
+to ship. Untracked and ignored, along with `htmlcov/`, `.pytest_cache/` and
+`.ruff_cache/`, which were never ignored either.
+
 ### Fixed — tests that could leave debris in the repository they test
 Four release-script tests drove the script against the **real** repo: tagging it,
 dropping a scratch file in it, editing its CHANGELOG, and undoing all of it in `finally`.

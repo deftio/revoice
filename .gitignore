@@ -3,6 +3,14 @@ __pycache__/
 .venv/
 build/
 dist/
+# pytest --cov scratch: a binary SQLite file rewritten by every test run. It was tracked
+# for nine commits, showing up as a meaningless diff in each of them, and nothing reads
+# it — CI computes coverage fresh.
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.ruff_cache/
 # voice packs are personal data — never commit
 data/
 revoice.yaml
