@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.11 (unreleased)
+## 0.1.11 - 2026-09-17
 
 ### Fixed — `--release` could not finish a release that was already merged
 A release can arrive half-done: the PR gets merged on GitHub — by you, by auto-merge, by
