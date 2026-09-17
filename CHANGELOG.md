@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.1.11 (unreleased)
+
+### Fixed — `--release` could not finish a release that was already merged
+A release can arrive half-done: the PR gets merged on GitHub — by you, by auto-merge, by
+anyone — and then nobody tags it or publishes the artefacts. The script had no idea. It
+would cut a fresh branch off a `main` that already carried the content, open a second PR
+with an empty diff, and leave the only real route as typing the tag and release commands
+by hand. Which is exactly what happened to 0.1.10.
+
+It now asks the obvious question before doing anything: **is this version already on the
+main branch?** If HEAD is main, main matches its remote, and the tag is still missing,
+then the merge half is done and only the publish half is left — so it skips straight to
+waiting on main's CI, tagging, and publishing. Without `--release` it says so and stops:
+
+```
+  0.1.11 is already merged into main.
+  There is no PR to open. What is left is the tag and the GitHub Release:
+
+      ./scripts/release.sh --release
+```
+
+It refuses to publish on a main whose latest CI run is anything but green, because a
+release is only as good as the run that validated the commit it points at. Tagging is now
+one shared step reached either way, and it echoes every git command it runs.
+
 ## 0.1.10 - 2026-09-14
 
 **Better metrics, under a hard constraint: everything here runs in a browser.**

@@ -513,7 +513,54 @@ EOF
   exit 0
 fi
 
-# ------------------------------------------------------------------ 7. push and PR ----
+# ---------------------------------------------- 7. already shipped? finish the job ----
+# A release can arrive here half-done: the PR was merged on GitHub — by you, by
+# auto-merge, by someone else — and then nobody tagged it or published the artefacts.
+# The script used to have no idea. It would cut a fresh branch off a main that already
+# carried the content and open a second PR with an empty diff, and the only way to
+# actually finish was to type the tag and release commands by hand.
+#
+# So it asks the obvious question first: is this version already on the main branch?
+# If HEAD is main, main matches its remote, and the tag is still missing, then the merge
+# half is done and only the publish half is left.
+ALREADY_ON_MAIN=0
+if [ "$BRANCH" = "$MAIN_BRANCH" ] \
+   && git rev-parse -q --verify "origin/$MAIN_BRANCH" >/dev/null \
+   && [ -z "$(git diff "origin/$MAIN_BRANCH" -- . 2>/dev/null)" ] \
+   && [ "$(git rev-parse HEAD)" = "$(git rev-parse "origin/$MAIN_BRANCH")" ]; then
+  ALREADY_ON_MAIN=1
+fi
+
+if [ "$ALREADY_ON_MAIN" -eq 1 ]; then
+  step "Already merged"
+  note "$VERSION is already on $MAIN_BRANCH at $(git rev-parse --short HEAD)"
+  note "nothing to branch, push or merge — only the tag and the release are missing"
+
+  if [ "$DO_RELEASE" -eq 0 ]; then
+    cat <<EOF
+
+  ${BOLD}$VERSION is already merged into $MAIN_BRANCH.${RST}
+  There is no PR to open. What is left is the tag and the GitHub Release:
+
+      $0 --release
+EOF
+    exit 0
+  fi
+
+  step "Waiting for CI on $MAIN_BRANCH"
+  note "the local gates above were a fast filter; this is the run that decides"
+  MAIN_RUN=$(gh run list --branch "$MAIN_BRANCH" --limit 1 --json databaseId,conclusion,status \
+               -q '.[0] | "\(.databaseId) \(.status) \(.conclusion)"' 2>/dev/null || true)
+  case "$MAIN_RUN" in
+    *"completed success"*) ok "CI green on $MAIN_BRANCH (run ${MAIN_RUN%% *})" ;;
+    "") warn "no CI run found for $MAIN_BRANCH — publishing on the local gates alone" ;;
+    *) die "the latest CI run on $MAIN_BRANCH is '${MAIN_RUN#* }', not a green one.
+       Look at it:  gh run view ${MAIN_RUN%% *} --log-failed
+       A release is only as good as the run that validated the commit it points at." ;;
+  esac
+else
+
+# ------------------------------------------------------------------ 7b. push and PR ----
 step "Pull request"
 RELEASE_BRANCH="$BRANCH"
 if [ "$BRANCH" = "$MAIN_BRANCH" ]; then
@@ -565,16 +612,23 @@ if ! timeout "$CI_TIMEOUT" gh pr checks "$RELEASE_BRANCH" --watch --fail-fast; t
 fi
 ok "CI passed"
 
-step "Merge and tag"
+step "Merge"
 confirm "Squash-merge $PR_URL into $MAIN_BRANCH, tag v$VERSION and publish?"
-gh pr merge "$RELEASE_BRANCH" --squash --delete-branch \
+run_cmd gh pr merge "$RELEASE_BRANCH" --squash --delete-branch \
   --subject "Release $VERSION" --body "$(printf '%s' "$NOTES" | head -60)"
 ok "squash-merged into $MAIN_BRANCH"
 
-git checkout -q "$MAIN_BRANCH"
-git pull -q --ff-only origin "$MAIN_BRANCH"
-git tag -a "v$VERSION" -m "revoice $VERSION"
-git push -q origin "v$VERSION"
+run_cmd git checkout -q "$MAIN_BRANCH"
+run_cmd git pull -q --ff-only origin "$MAIN_BRANCH"
+
+fi   # end of the "not already on main" branch
+
+# Tagging is the same work whichever way we got here: main carries the version, CI is
+# green on it, and the tag is what turns that commit into the release.
+step "Tag"
+confirm "Tag v$VERSION on $(git rev-parse --short HEAD) and publish the GitHub Release?"
+run_cmd git tag -a "v$VERSION" -m "revoice $VERSION"
+run_cmd git push -q origin "v$VERSION"
 ok "tagged v$VERSION on $(git rev-parse --short HEAD)"
 
 # -------------------------------------------------------------- 9. publish: GitHub ----

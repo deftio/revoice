@@ -16,7 +16,7 @@ The two embedded engines version themselves independently and deliberately:
 `revoice.rubric.version()` and `revoice.voicemetric.version()`.
 """
 
-__version__ = "0.1.10"
+__version__ = "0.1.11"
 
 
 # --- runtime version support ---------------------------------------------------
