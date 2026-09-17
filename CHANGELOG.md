@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.1.12 (unreleased)
+
+### Fixed — the last two ways `--release` left a release half-done
+Both found by shipping 0.1.11 with it, which is the only way these were ever going to
+surface.
+
+**`git pull --ff-only` after the squash merge, which cannot ever succeed.** A squash
+merge replaces the branch's commits with one new commit upstream, so local `main` and
+`origin/main` have diverged *by construction* the instant it lands. Asking for a
+fast-forward fails every time, `set -e` killed the script, and the release stopped
+merged-but-untagged — exactly the state 0.1.11 was written to rescue, reproduced twice
+while trying to ship the rescue. It now fetches and resets, after checking that the
+squash upstream is byte-identical to what was reviewed, and refuses if it is not.
+
+**A race read as a failure.** `gh pr checks --watch` was called the moment the PR was
+created, before GitHub had registered the workflow run. In that window `gh pr checks`
+prints "no checks reported" and exits non-zero, so the script announced *"CI is not
+green"* about a run that was still `in_progress` and went on to pass. It now waits for a
+run to exist before asking how it is doing.
+
+### Fixed — `--fix` left a stray backup beside the changelog
+BSD `sed -i` takes a backup suffix. Holding the BSD form as the string `"sed -i ''"` and
+expanding it unquoted does not pass an empty argument — the quotes survive as a literal
+two-character suffix, so sed edited `CHANGELOG.md` and wrote a `CHANGELOG.md''` next to
+it. The release then stopped on its own dirty-tree gate, which is the system working, but
+it should not have had to. The string shown and the argument list executed are now
+separate.
+
 ## 0.1.11 - 2026-09-17
 
 ### Fixed — `--fix` left a stray backup file beside the changelog

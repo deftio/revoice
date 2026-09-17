@@ -6,7 +6,7 @@
    while the fitted value was 0.181, for exactly that reason. */
 var VM_CONST = {
   "VERSIONS": {
-    "revoice": "0.1.11",
+    "revoice": "0.1.12",
     "voicemetric": "0.5.0",
     "voicemetric_signature": "bfd1b0992fc8",
     "rubric": "1.0.0"

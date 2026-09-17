@@ -610,6 +610,29 @@ fi
 step "Waiting for CI"
 note "the local gates above were a fast filter; this is the run that decides"
 note "watching $PR_URL (timeout ${CI_TIMEOUT}s)"
+
+# GitHub registers the workflow run a moment AFTER the PR is created, and until it does
+# `gh pr checks` prints "no checks reported" and exits non-zero. Watching immediately
+# therefore reads a race as a failure — which it did: 0.1.11's first attempt stopped with
+# "CI is not green" while the run was still in_progress and went on to pass. Wait for a
+# run to exist before asking how it is doing.
+note "waiting for GitHub to register the workflow run"
+CHECKS_READY=0
+for _ in $(seq 1 24); do        # up to two minutes
+  if [ -n "$(gh run list --branch "$RELEASE_BRANCH" --limit 1 \
+               --json databaseId -q '.[0].databaseId' 2>/dev/null)" ]; then
+    CHECKS_READY=1
+    break
+  fi
+  sleep 5
+done
+[ "$CHECKS_READY" -eq 1 ] || die "no CI run appeared for '$RELEASE_BRANCH' after two minutes.
+       The PR is open and nothing was merged. Check that the workflow is enabled:
+         gh workflow list
+         $PR_URL
+       Then:  $0 --release"
+ok "CI run registered"
+
 if ! timeout "$CI_TIMEOUT" gh pr checks "$RELEASE_BRANCH" --watch --fail-fast; then
   die "CI is not green — the PR stays open and nothing was merged or published.
        Look at what failed:
@@ -628,7 +651,23 @@ run_cmd gh pr merge "$RELEASE_BRANCH" --squash --delete-branch \
 ok "squash-merged into $MAIN_BRANCH"
 
 run_cmd git checkout -q "$MAIN_BRANCH"
-run_cmd git pull -q --ff-only origin "$MAIN_BRANCH"
+# NOT --ff-only. The squash merge that just happened REPLACED this branch's commits with
+# one new commit upstream, so local main and origin/main have diverged by construction —
+# every commit we pushed is now an ancestor of nothing, and their content lives in the
+# squash. Asking for a fast-forward here fails every single time, which is what left
+# 0.1.10 and then 0.1.11 merged-but-untagged.
+#
+# Resetting is safe precisely because of what a squash merge is: the tree we pushed and
+# the tree upstream are identical, so nothing local is lost. That is checked rather than
+# assumed, and the reset is refused if it is not true.
+run_cmd git fetch -q origin "$MAIN_BRANCH"
+if [ -n "$(git diff "origin/$MAIN_BRANCH" "$RELEASE_BRANCH" 2>/dev/null)" ]; then
+  die "the squash merge on origin/$MAIN_BRANCH does not match what was reviewed.
+       Nothing was tagged or published. Compare them before going further:
+         git diff origin/$MAIN_BRANCH $RELEASE_BRANCH"
+fi
+run_cmd git reset --hard -q "origin/$MAIN_BRANCH"
+ok "$MAIN_BRANCH now at $(git rev-parse --short HEAD) (the squash commit)"
 
 fi   # end of the "not already on main" branch
 
