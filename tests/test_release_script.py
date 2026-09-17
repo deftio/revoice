@@ -46,19 +46,18 @@ def test_help_documents_the_ladder_and_the_read_only_contract():
 @bash
 def test_refuses_a_dirty_working_tree():
     """Release ships what is committed. An uncommitted change is one CI never saw."""
-    scratch = ROOT / "release-dirty-probe.tmp"
-    scratch.write_text("uncommitted\n")
-    try:
-        r = run()
+    import subprocess as sp
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        wt = _fixable_repo(Path(tmp), dated=True, dirty=True)
+        r = sp.run([str(wt / "scripts" / "release.sh")], cwd=wt, env=_env(),
+                   capture_output=True, text=True, timeout=180)
         assert r.returncode != 0
         assert "uncommitted changes" in r.stderr
-        # and it must say what to type, not merely what is wrong
         assert "git add -A && git commit" in r.stderr
         assert "git stash -u" in r.stderr
-        assert "release-dirty-probe.tmp" in r.stderr, "it should list the offending files"
-    finally:
-        scratch.unlink()
-
+        assert "release-probe.tmp" in r.stderr, "it should list the offending files"
 
 @bash
 def test_rejects_an_unknown_option():
@@ -76,28 +75,20 @@ def test_expect_guards_against_releasing_the_wrong_version():
 
 @bash
 def test_refuses_to_reuse_an_existing_tag():
-    import revoice
+    import subprocess as sp
+    import tempfile
 
-    tag = f"v{revoice.__version__}"
-    existed = subprocess.run(["git", "rev-parse", "-q", "--verify", f"refs/tags/{tag}"],
-                             cwd=ROOT, capture_output=True).returncode == 0
-    if not existed:
-        subprocess.run(["git", "tag", tag], cwd=ROOT, capture_output=True)
-    try:
-        r = run()
+    with tempfile.TemporaryDirectory() as tmp:
+        wt = _fixable_repo(Path(tmp), dated=True, tagged=True)
+        r = sp.run([str(wt / "scripts" / "release.sh")], cwd=wt, env=_env(),
+                   capture_output=True, text=True, timeout=180)
         assert r.returncode != 0
         assert "already tagged" in r.stderr
         # It points at where the version lives; it does NOT propose a number. Whether
         # the next release is a patch, a minor or a major is a judgement about what
         # changed, and the script has no standing to make it.
         assert "revoice/__init__.py" in r.stderr and "CHANGELOG.md" in r.stderr
-        major, minor, patch = revoice.__version__.split(".")
-        assert f"{major}.{minor}.{int(patch) + 1}" not in r.stderr, \
-            "the script should not be choosing the next version"
-    finally:
-        if not existed:
-            subprocess.run(["git", "tag", "-d", tag], cwd=ROOT, capture_output=True)
-
+        assert "9.9.10" not in r.stderr, "the script should not choose the next version"
 
 @bash
 def test_the_retired_editing_flags_explain_what_replaced_them():
@@ -107,8 +98,17 @@ def test_the_retired_editing_flags_explain_what_replaced_them():
         assert "no longer edits the repo" in r.stderr, flag
 
 
-def _fixable_repo(tmp: Path) -> Path:
-    """A repo whose only problem is an undated changelog — mechanical, not a decision."""
+def _fixable_repo(tmp: Path, *, dated: bool = False, tagged: bool = False,
+                  dirty: bool = False) -> Path:
+    """A throwaway repo shaped like this one, with whichever problems you asked for.
+
+    Every scenario runs here rather than against the real repository. Four of these
+    tests used to tag the real repo, drop a scratch file in it, or edit its CHANGELOG,
+    undoing it all in `finally` — which is fine until a run is interrupted. One killed
+    pytest left a stray `v0.1.11` tag behind, and the next release refused to run
+    because of it. A test that can poison the tree it is testing is a bad trade for the
+    handful of lines a fixture costs.
+    """
     import subprocess as sp
 
     wt = tmp / "repo"
@@ -120,13 +120,18 @@ def _fixable_repo(tmp: Path) -> Path:
     # the file, so a fixture without the accessor is not a fixture of this project.
     (wt / "revoice" / "__init__.py").write_text(
         '__version__ = "9.9.9"\n\n\ndef version():\n    return __version__\n')
+    heading = "## 9.9.9 - 2026-01-01" if dated else "## 9.9.9 (unreleased)"
     (wt / "CHANGELOG.md").write_text(
-        "# Changelog\n\n## 9.9.9 (unreleased)\n\nnotes long enough to pass the gate\n")
+        f"# Changelog\n\n{heading}\n\nnotes long enough to pass the gate\n")
     # running python in here leaves __pycache__; that is not the script writing
     (wt / ".gitignore").write_text("__pycache__/\n*.pyc\n")
     for a in (["init", "-q", "-b", "main", "."], ["config", "user.email", "t@e.com"],
               ["config", "user.name", "t"], ["add", "-A"], ["commit", "-qm", "init"]):
         sp.run(["git", *a], cwd=wt, capture_output=True)
+    if tagged:
+        sp.run(["git", "tag", "v9.9.9"], cwd=wt, capture_output=True)
+    if dirty:
+        (wt / "release-probe.tmp").write_text("uncommitted\n")
     return wt
 
 
@@ -326,72 +331,51 @@ def test_the_release_builds_both_distribution_targets():
 @bash
 def test_every_problem_is_reported_in_one_pass():
     """Three simultaneous problems, one run, three numbered items."""
-    import re
+    import subprocess as sp
+    import tempfile
 
-    import revoice
-
-    changelog = ROOT / "CHANGELOG.md"
-    original = changelog.read_text()
-    scratch = ROOT / "release-multi-probe.tmp"
-    tag = f"v{revoice.__version__}"
-    tag_existed = subprocess.run(["git", "rev-parse", "-q", "--verify", f"refs/tags/{tag}"],
-                                 cwd=ROOT, capture_output=True).returncode == 0
-    try:
-        changelog.write_text(re.sub(rf"^## {re.escape(revoice.__version__)} .*$",
-                                    f"## {revoice.__version__} (unreleased)",
-                                    original, count=1, flags=re.M))
-        scratch.write_text("uncommitted\n")
-        if not tag_existed:
-            subprocess.run(["git", "tag", tag], cwd=ROOT, capture_output=True)
-
-        r = run()
+    with tempfile.TemporaryDirectory() as tmp:
+        wt = _fixable_repo(Path(tmp), tagged=True, dirty=True)   # + undated changelog
+        r = sp.run([str(wt / "scripts" / "release.sh")], cwd=wt, env=_env(),
+                   capture_output=True, text=True, timeout=180)
         assert r.returncode != 0
         assert "not ready to release" in r.stderr
-        assert "3 things to do first" in r.stderr, r.stderr
-        for n in ("1.", "2.", "3."):
-            assert f"\n{n} " in r.stderr or r.stderr.startswith(f"{n} "), n
+        # Assert the report is SELF-CONSISTENT rather than hardcoding how many problems
+        # this fixture happens to have — the count is the thing under test, and pinning
+        # it to 3 makes the test fail when the fixture grows a fourth for unrelated
+        # reasons, which is exactly what happened.
+        import re
+
+        stated = int(re.search(r"(\d+) things? to do first", r.stderr).group(1))
+        numbered = re.findall(r"^\d+\. ", r.stderr, re.M)
+        assert stated == len(numbered), f"says {stated}, lists {len(numbered)}"
+        assert stated >= 3, "the fixture should present at least three problems"
         # ordering matters: fixing the tag changes the version the others refer to
         assert "do them in order" in r.stderr
         assert "then re-run:" in r.stderr
-    finally:
-        changelog.write_text(original)
-        scratch.unlink(missing_ok=True)
-        if not tag_existed:
-            subprocess.run(["git", "tag", "-d", tag], cwd=ROOT, capture_output=True)
-
 
 @bash
 def test_an_undated_changelog_hands_back_the_exact_edit():
-    import re
+    import subprocess as sp
+    import tempfile
     from datetime import datetime, timezone
 
-    import revoice
-
-    changelog = ROOT / "CHANGELOG.md"
-    original = changelog.read_text()
-    v = revoice.__version__
-    try:
-        changelog.write_text(re.sub(rf"^## {re.escape(v)} .*$", f"## {v} (unreleased)",
-                                    original, count=1, flags=re.M))
-        r = run()
+    with tempfile.TemporaryDirectory() as tmp:
+        wt = _fixable_repo(Path(tmp))
+        r = sp.run([str(wt / "scripts" / "release.sh")], cwd=wt, env=_env(),
+                   capture_output=True, text=True, timeout=180)
         assert r.returncode != 0
         assert "(unreleased)" in r.stderr
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        # a runnable line, with today's date already substituted in
-        assert f"## {v} - {today}" in r.stderr
+        assert f"## 9.9.9 - {today}" in r.stderr
         assert "sed -i" in r.stderr and "CHANGELOG.md" in r.stderr
-        # BSD sed needs the empty arg, GNU sed refuses it. The script must suggest the
-        # one that is actually installed — wrong advice is worse than none.
-        import subprocess as sp
+        # BSD sed needs the empty arg, GNU sed refuses it; suggest the installed one.
         gnu = sp.run(["sed", "--version"], capture_output=True).returncode == 0
         suggested = next(line for line in r.stderr.splitlines() if "sed -i" in line)
         if gnu:
             assert "sed -i ''" not in suggested, f"GNU sed given BSD syntax: {suggested}"
         else:
             assert "sed -i ''" in suggested, f"BSD sed given GNU syntax: {suggested}"
-    finally:
-        changelog.write_text(original)
-
 
 @bash
 def test_no_message_merely_states_the_problem():

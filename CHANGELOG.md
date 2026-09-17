@@ -25,6 +25,21 @@ It refuses to publish on a main whose latest CI run is anything but green, becau
 release is only as good as the run that validated the commit it points at. Tagging is now
 one shared step reached either way, and it echoes every git command it runs.
 
+### Fixed — tests that could leave debris in the repository they test
+Four release-script tests drove the script against the **real** repo: tagging it,
+dropping a scratch file in it, editing its CHANGELOG, and undoing all of it in `finally`.
+That is fine until a run is interrupted. One killed pytest left a stray local `v0.1.11`
+tag behind, and the next release refused to run — *"v0.1.11 is already tagged"* — for a
+version that had never existed. A test that can poison the tree it is testing is a bad
+trade for the handful of lines a fixture costs, so they now build a throwaway repo with
+whichever problems the scenario needs. The suite also got ten times faster, because it
+stopped running the full script against a real project.
+
+One assertion changed shape while moving: it pinned the report to exactly "3 things to
+do first", and broke when the fixture grew a fourth problem for unrelated reasons. It now
+checks the stated count matches the number of items listed — which is the thing actually
+under test.
+
 ## 0.1.10 - 2026-09-14
 
 **Better metrics, under a hard constraint: everything here runs in a browser.**
